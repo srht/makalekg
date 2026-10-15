@@ -29,7 +29,7 @@ class Job:
     kind: str
     title: str
     params: dict[str, Any]
-    status: str = "queued"  # queued | running | done | failed | interrupted
+    status: str = "queued"  # queued | running | waiting (elle yanıt bekliyor) | done | failed | interrupted
     created_at: str = field(default_factory=_now)
     started_at: str | None = None
     finished_at: str | None = None
@@ -84,7 +84,7 @@ class JobManager:
         try:
             for d in json.loads(self.path.read_text(encoding="utf-8")):
                 job = Job(**d)
-                if job.status in ("queued", "running"):
+                if job.status in ("queued", "running", "waiting"):
                     job.status, job.error = "interrupted", "sunucu yeniden başlatıldı"
                 self.jobs[job.id] = job
                 self.order.append(job.id)

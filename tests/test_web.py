@@ -98,3 +98,51 @@ def test_pdf_upload_validation(client):
     r = client.post("/jobs/ingest", data={"csrf": tok, "phase": "1"},
                     files={"pdf": ("x.pdf", b"not a pdf", "application/pdf")}, follow_redirects=False)
     assert r.status_code == 400
+
+
+@pytest.fixture
+def manual_client(client, monkeypatch):
+    monkeypatch.setenv("LLM_BACKEND", "manual")
+    return client
+
+
+def test_manual_copy_paste_flow(manual_client):
+    c = manual_client
+    tok = _csrf(c)
+    assert "Kopyala–yapıştır modu açık" in c.get("/").text
+    r = c.post("/ask", data={"csrf": tok, "question": "Hsp70 nöronları korur mu?"}, follow_redirects=False)
+    job_id = r.headers["location"].rsplit("/", 1)[1]
+    end = time.time() + 10
+    while not c.get("/api/manual").json()["pending"]:
+        assert time.time() < end
+        time.sleep(0.05)
+    req_id = c.get("/api/manual").json()["pending"]
+    page = c.get("/manual").text
+    assert "İstemi kopyala" in page and "Hsp70" in page and "GRAF KANITI" in page
+    assert "Yanıtınız bekleniyor" in c.get("/claims").text
+    assert c.get(f"/api/jobs/{job_id}").json()["status"] == "waiting"
+    assert "GRAF KANITI" in c.get(f"/manual/{req_id}/prompt.md").text
+    # boş yanıt reddedilir, istem beklemede kalır
+    c.post(f"/manual/{req_id}", data={"csrf": tok, "answer": "   "})
+    assert c.get("/api/manual").json()["pending"] == req_id
+    assert "kabul edilmedi" in c.get("/manual").text
+    r = c.post(f"/manual/{req_id}", data={"csrf": tok, "answer": "Sadece farede gösterildi (Fig. 3a)."},
+               follow_redirects=False)
+    d = _wait(c, job_id)
+    assert d["status"] == "done" and "farede" in d["result"]["answer"]
+    assert c.get("/api/manual").json()["pending"] is None
+
+
+def test_manual_cancel(manual_client):
+    c = manual_client
+    tok = _csrf(c)
+    r = c.post("/ask", data={"csrf": tok, "question": "Piezo1?"}, follow_redirects=False)
+    job_id = r.headers["location"].rsplit("/", 1)[1]
+    end = time.time() + 10
+    while not c.get("/api/manual").json()["pending"]:
+        assert time.time() < end
+        time.sleep(0.05)
+    req_id = c.get("/api/manual").json()["pending"]
+    c.post(f"/manual/{req_id}/cancel", data={"csrf": tok})
+    d = _wait(c, job_id)
+    assert d["status"] == "failed" and "iptal" in d["error"]

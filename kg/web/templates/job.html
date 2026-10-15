@@ -11,6 +11,7 @@
 <div class="card md answer" id="answer">{% if job.status == "done" and job.result %}{{ job.result.answer | md }}{% else %}<span class="muted">Yanıt hazırlanıyor…</span>{% endif %}</div>
 {% endif %}
 
+{% if job.status == "waiting" %}<div class="notice hyp">Bu iş sizin yanıtınızı bekliyor. <a href="/manual">Elle yanıt sayfasına git →</a></div>{% endif %}
 <div id="error">{% if job.error %}<div class="notice bad"><b>Hata:</b> {{ job.error }}</div>{% endif %}</div>
 
 <div id="result">
@@ -30,14 +31,14 @@
 </div>
 {% endblock %}
 {% block scripts %}
-{% if job.status in ("queued", "running") %}
+{% if job.status in ("queued", "running", "waiting") %}
 <script>
 (() => {
   const id = {{ job.id | tojson }};
   const logEl = document.getElementById('log');
   let n = {{ job.log | length }};
   const labels = {done: ['good', 'tamamlandı'], failed: ['bad', 'başarısız'], interrupted: ['bad', 'yarıda kaldı'],
-                  running: ['warn', 'çalışıyor'], queued: ['', 'sırada']};
+                  running: ['warn', 'çalışıyor'], waiting: ['hyp', 'yanıtınızı bekliyor'], queued: ['', 'sırada']};
   async function tick() {
     try {
       const r = await fetch(`/api/jobs/${id}?since=${n}`, {credentials: 'same-origin'});
@@ -51,7 +52,12 @@
       n = d.log_len;
       const [cls, txt] = labels[d.status] || ['', d.status];
       document.getElementById('status').innerHTML = `<span class="badge ${cls}">${txt}</span>`;
-      if (d.status === 'running' || d.status === 'queued') { setTimeout(tick, 2000); return; }
+      if (d.manual_pending && !document.getElementById('goManual')) {
+        const a = document.createElement('div'); a.id = 'goManual'; a.className = 'notice hyp';
+        a.innerHTML = 'Bu iş sizin yanıtınızı bekliyor. <a href="/manual">Elle yanıt sayfasına git →</a>';
+        document.getElementById('error').before(a);
+      }
+      if (d.status === 'running' || d.status === 'queued' || d.status === 'waiting') { setTimeout(tick, 2000); return; }
       location.reload();
     } catch (e) { setTimeout(tick, 5000); }
   }

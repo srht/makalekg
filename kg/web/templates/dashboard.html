@@ -4,6 +4,11 @@
 <p class="muted">Kemik–beyin ekseni literatüründen iddia merkezli knowledge graph. Kanıt (makalelerden) ve
 hipotez (sistemin tahmini) her zaman ayrı tutulur.</p>
 
+{% if cfg.manual %}
+<div class="notice hyp"><b>Kopyala–yapıştır modu açık.</b> API kullanılmıyor: bir iş model yanıtına ihtiyaç duyduğunda
+istem <a href="/manual">Elle yanıt</a> sayfasında belirir; Claude.ai gibi bir sohbete yapıştırıp yanıtı geri yapıştırırsınız.
+Makale başına genelde 2 adım. LLM ajanı bu modda çalışmaz; "Soru sor" ilgili kanıtı derleyip tek istem hazırlar.</div>
+{% endif %}
 {% if not cfg.llm_ready %}
 <div class="notice bad"><b>LLM anahtarı yok.</b> Çıkarım ve soru sorma için Dokploy → Environment'ta
 <code>ANTHROPIC_API_KEY</code> tanımlayın (veya <code>LLM_BACKEND=openai_compat</code> + <code>OPENAI_COMPAT_BASE_URL</code>).</div>
@@ -34,7 +39,12 @@ hipotez (sistemin tahmini) her zaman ayrı tutulur.</p>
     <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="phase" value="1">
     <label>Makale PDF'i (isteğe bağlı)</label><input type="file" name="pdf" accept="application/pdf">
     <label class="check"><input type="checkbox" name="force" value="1"> Önbellekteki çıkarımı yok say (yeniden çıkar)</label>
-    <div class="actions"><button {% if not cfg.llm_ready %}disabled{% endif %}>Faz 1'i çalıştır</button></div>
+    <div class="actions"><button {% if cfg.manual %}
+<div class="notice hyp"><b>Kopyala–yapıştır modu açık.</b> API kullanılmıyor: bir iş model yanıtına ihtiyaç duyduğunda
+istem <a href="/manual">Elle yanıt</a> sayfasında belirir; Claude.ai gibi bir sohbete yapıştırıp yanıtı geri yapıştırırsınız.
+Makale başına genelde 2 adım. LLM ajanı bu modda çalışmaz; "Soru sor" ilgili kanıtı derleyip tek istem hazırlar.</div>
+{% endif %}
+{% if not cfg.llm_ready %}disabled{% endif %}>Faz 1'i çalıştır</button></div>
   </form>
 
   <form class="card" method="post" action="/jobs/ingest" enctype="multipart/form-data">
@@ -44,7 +54,12 @@ hipotez (sistemin tahmini) her zaman ayrı tutulur.</p>
     <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="phase" value="2">
     {% for s in sets %}<label class="check"><input type="checkbox" name="sets" value="{{ s }}" {% if loop.first %}checked{% endif %}> {{ s }}</label>{% endfor %}
     <label>En fazla makale (deneme için)</label><input type="number" name="limit" min="1" placeholder="boş = sınır yok (config)">
-    <div class="actions"><button {% if not cfg.llm_ready %}disabled{% endif %}>Faz 2'yi çalıştır</button></div>
+    <div class="actions"><button {% if cfg.manual %}
+<div class="notice hyp"><b>Kopyala–yapıştır modu açık.</b> API kullanılmıyor: bir iş model yanıtına ihtiyaç duyduğunda
+istem <a href="/manual">Elle yanıt</a> sayfasında belirir; Claude.ai gibi bir sohbete yapıştırıp yanıtı geri yapıştırırsınız.
+Makale başına genelde 2 adım. LLM ajanı bu modda çalışmaz; "Soru sor" ilgili kanıtı derleyip tek istem hazırlar.</div>
+{% endif %}
+{% if not cfg.llm_ready %}disabled{% endif %}>Faz 2'yi çalıştır</button></div>
   </form>
 
   <form class="card" method="post" action="/jobs/infer">

@@ -26,7 +26,7 @@ cp .env.example .env               # ANTHROPIC_API_KEY, NEO4J_PASSWORD, CONTACT_
 docker compose -f docker-compose.yml -f docker-compose.local.yml up -d neo4j   # Neo4j 5 → http://localhost:7474
 ```
 
-LLM arka ucu `.env` ile seçilir: `LLM_BACKEND=anthropic` (varsayılan model `claude-opus-5-5`,
+LLM arka ucu `.env` ile seçilir: `LLM_BACKEND=manual` (kopyala–yapıştır, API yok; aşağıya bakın), `LLM_BACKEND=anthropic` (varsayılan model `claude-opus-5-5`,
 yapılandırılmış JSON çıktısı, adaptive thinking, sunucu tarafı `fallbacks: "default"`) veya
 `LLM_BACKEND=openai_compat` (yerel model sunucusu, `OPENAI_COMPAT_BASE_URL`).
 Neo4j olmadan denemek için `GRAPH_BACKEND=memory` (graf `data/graph.json`'a yazılır) ya da her komutta
@@ -60,6 +60,28 @@ Neo4j Browser'a bakmak isterseniz Dokploy terminalinden `cypher-shell` kullanın
 İddialar (kanıt düzeyi + kaynak cümle), Hipotezler (zincir, en zayıf halka; kanıttan görsel olarak ayrı),
 Soru sor (ajan, düz Türkçe), Spot-check (doğru/kısmen/yanlış işaretleme sunucuya kaydedilir),
 İnceleme kuyruğu, Raporlar, İşler (canlı log). Uzun işler arka planda tek bir kuyrukta sırayla çalışır.
+
+### API anahtarı olmadan: kopyala–yapıştır modu
+
+`LLM_BACKEND=manual` ayarlanırsa hiçbir LLM API'si çağrılmaz. Bir iş model yanıtına ihtiyaç duyduğunda
+durur ve istem **Elle yanıt** sayfasında belirir (üstte uyarı çıkar):
+
+1. "İstemi kopyala" (veya `.md` olarak indir) → Claude.ai gibi bir sohbete **yeni sohbet** olarak yapıştır.
+2. Modelin yanıtının tamamını kopyalayıp sayfadaki kutuya yapıştır → "Yanıtı gönder".
+3. Yanıt şemaya göre denetlenir; ` ```json ` çitleri ve etrafındaki açıklamalar sorun değil. Geçersizse hata
+   gösterilir ve aynı adım tekrar beklenir. İş kaldığı yerden devam eder.
+
+Bu modda makalenin tamamı (giriş hariç bölümler + tüm şekil açıklamaları) tek istemde gönderilir, böylece
+makale başına genelde **2 adım** olur: iddia çıkarımı + öz-doğrulama. Aynı kurallar geçerlidir: kaynak cümlesi
+metinde birebir geçmeyen çıkarım reddedilir, "unsupported" olanlar inceleme kuyruğuna gider. Verilen yanıtlar
+`data/cache/manual/` altında saklanır; aynı istem tekrar sorulmaz (sunucu yeniden başlasa da).
+`MANUAL_MODEL_NAME` (ör. `claude.ai Opus`) kenarlara `extraction_model` olarak yazılır.
+
+Sınırlamalar: LLM ajanı araç çağıramadığı için bu modda kapalıdır (hipotezler kural zincirleriyle üretilir).
+"Soru sor", sorudaki terimlerle eşleşen kanıtı graftan derleyip tek bir istem hazırlar. Faz 2'de yüzlerce
+makale olabileceği için elle mod en çok Faz 1 ve küçük denemeler için uygundur (`limit` alanını kullanın).
+Komut satırında da çalışır: istem `data/manual/NNN_*.prompt.md` dosyasına yazılır, yanıtı yanındaki
+`.response.txt` dosyasına kaydedip Enter'a basarsınız.
 
 **Yerel deneme:**
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections import Counter
 from typing import Any
 
@@ -71,6 +72,11 @@ def infer(store: GraphStore, embed: bool = False, agent: bool = False, task: str
         from .llm import get_llm
         llm = get_llm()
     if agent:
+        from .llm import is_manual
+        if is_manual(llm):
+            log.warning("Elle modda LLM ajanı çalışmaz (araç kullanamaz); yalnızca kural zincirleri kullanılıyor")
+            agent = False
+    if agent:
         from .infer.agent import GraphAgent
         task = task or "En az test edilmiş ama en güçlü bağlı molekülleri bul ve hipotez öner."
         agent_fn = lambda snap: GraphAgent(llm, snap, _cypher(backend)).propose(task)
@@ -95,10 +101,43 @@ def infer(store: GraphStore, embed: bool = False, agent: bool = False, task: str
 
 def ask(store: GraphStore, question: str, backend: str | None = None) -> dict[str, Any]:
     from .infer.agent import GraphAgent
-    from .llm import get_llm
+    from .llm import get_llm, is_manual
 
-    answer = GraphAgent(get_llm(), store.snapshot(), _cypher(backend)).ask(question)
+    llm = get_llm()
+    snap = store.snapshot()
+    if is_manual(llm):
+        # Elle modda ajan araç çağıramaz: ilgili kanıt graftan derlenip tek istemde verilir
+        return {"question": question, "answer": llm.complete_text(*manual_ask_prompt(snap, question))}
+    answer = GraphAgent(llm, snap, _cypher(backend)).ask(question)
     return {"question": question, "answer": answer}
+
+
+def manual_ask_prompt(snap: GraphSnapshot, question: str, max_claims: int = 40) -> tuple[str, str]:
+    from .infer.agent import ASK_SYSTEM
+
+    terms = {t for t in re.findall(r"[\w\-]{3,}", question.lower())}
+    seen: dict[str, dict[str, Any]] = {}
+    for t in terms:
+        for row in claims_table(snap, t):
+            seen.setdefault(row["id"], row)
+    rows = sorted(seen.values(), key=lambda r: -r["best_E"])[:max_claims]
+    if not rows:  # eşleşme yoksa en güçlü kanıtlar
+        rows = claims_table(snap)[:max_claims]
+    lines = []
+    for r in rows:
+        lines.append(f"- İDDİA: {r['text']} ({r['subject']} —{r['predicate']}→ {r['object']})")
+        for e in r["evidence"]:
+            lines.append(f"  - {e['relation']} · doi:{e['doi']} · {e['level']} · E={e['E']:.3f}"
+                         f"{' · p ' + str(e['p_value']) if e['p_value'] else ''}\n    kaynak cümle: \"{e['source_sentence']}\"")
+    hyps = [h for h in hypotheses_table(snap)
+            if any(t in (h["subject"] + " " + h["object"]).lower() for t in terms)][:10]
+    hyp_lines = [f"- HİPOTEZ (test edilmemiş tahmin, kanıt DEĞİL): {h['subject']} → {h['object']} ({h['predicate']}), "
+                 f"skor {h['score']:.3f}, durum {h['status']}, en zayıf halka: {h['weakest_link']}" for h in hyps]
+    user = ("Aşağıda grafın bu soruyla ilgili bölümü var. YALNIZCA bunu kullan; burada olmayan bir şeyi "
+            "bilmediğini söyle.\n\n=== GRAF KANITI ===\n" + ("\n".join(lines) or "(ilgili kanıt yok)") +
+            "\n\n=== SİSTEMİN HİPOTEZLERİ ===\n" + ("\n".join(hyp_lines) or "(yok)") +
+            f"\n\n=== SORU ===\n{question}")
+    return ASK_SYSTEM, user
 
 
 def backtest(store: GraphStore, cutoff: int = 2024, k: int = 20) -> dict[str, Any]:

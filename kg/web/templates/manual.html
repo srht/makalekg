@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}Elle yanıt — Kemik–Beyin KG{% endblock %}
+{% block content %}
+<h1>Elle yanıt (kopyala–yapıştır)</h1>
+{% if not cfg.manual %}
+<div class="notice">Şu an LLM arka ucu <b>{{ cfg.llm_backend }}</b>. Kopyala–yapıştır modunu kullanmak için
+ortam değişkenlerinde <code>LLM_BACKEND=manual</code> ayarlayıp yeniden dağıtın.</div>
+{% endif %}
+
+{% if req %}
+<div class="card">
+  <div class="row-between">
+    <h3>Adım {{ req.seq }} · {{ req.kind_tr }}</h3>
+    <span class="small muted">{% if req.job_title %}<a href="/jobs/{{ req.job_id }}">{{ req.job_title }}</a> · {% endif %}{{ "{:,}".format(req.prompt|length) }} karakter</span>
+  </div>
+  <ol class="small">
+    <li>İstemi kopyalayın ve <b>yeni bir sohbete</b> yapıştırın (Claude.ai vb.). Uzun istemler sohbete dosya olarak eklenebilir; bu da olur.</li>
+    {% if req.kind == "answer" %}
+    <li>Modelin yanıtının <b>tamamını</b> kopyalayıp aşağıya yapıştırın.</li>
+    {% else %}
+    <li>Modelin yanıtının <b>tamamını</b> kopyalayıp aşağıya yapıştırın. JSON'un etrafındaki açıklama ve <code>```json</code> çitleri sorun değil.</li>
+    <li>Sistem yanıtı şemaya göre denetler; hata varsa burada gösterir, yanıtı düzeltip (veya modelden düzeltmesini isteyip) tekrar gönderin.</li>
+    {% endif %}
+  </ol>
+  <div class="actions">
+    <button type="button" id="copy">İstemi kopyala</button>
+    <a class="btn secondary" href="/manual/{{ req.id }}/prompt.md">.md olarak indir</a>
+    <span id="copied" class="small muted"></span>
+  </div>
+  <details style="margin-top:10px"><summary>İstemi göster</summary>
+    <textarea id="prompt" readonly style="min-height:260px; font: 12.5px/1.45 var(--mono)">{{ req.prompt }}</textarea>
+  </details>
+</div>
+
+{% if req.error %}
+<div class="notice bad"><b>Son yanıt kabul edilmedi ({{ req.attempts }}. deneme):</b>
+  <pre class="log" style="max-height:220px; margin-top:8px">{{ req.error }}</pre>
+  {% if req.kind != "answer" %}<span class="small">İpucu: modele "Yanıtın şemaya uymadı, şu hata alındı: … Lütfen yalnızca şemaya uyan JSON'u tekrar ver" yazabilirsiniz.</span>{% endif %}</div>
+{% endif %}
+
+<form class="card" method="post" action="/manual/{{ req.id }}" style="margin-top:12px">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <label for="answer">Modelin yanıtı</label>
+  <textarea id="answer" name="answer" required style="min-height:240px; font: 13px/1.45 var(--mono)" placeholder='{{ "Modelin yanıtını buraya yapıştırın" if req.kind == "answer" else "{\"claims\": [ ... ]}" }}'></textarea>
+  <div class="actions">
+    <button>Yanıtı gönder</button>
+  </div>
+</form>
+<form method="post" action="/manual/{{ req.id }}/cancel" class="actions" onsubmit="return confirm('Bu işi iptal etmek istiyor musunuz?')">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <button class="secondary">İşi iptal et</button>
+</form>
+{% else %}
+<div class="card">
+  <p>Bekleyen istem yok.</p>
+  <p class="small muted">Panodan bir iş başlattığınızda (Faz 1, Faz 2, soru sor…) ve iş bir model yanıtına ihtiyaç duyduğunda
+  istem burada belirir. Bu sayfa açık kalırsa kendiliğinden yenilenir.</p>
+  <p class="small muted">Makale başına genelde 2 adım vardır: <b>iddia çıkarımı</b> (tüm metin tek istemde) ve
+  <b>öz-doğrulama</b>. Verilen yanıtlar saklanır; aynı istem tekrar sorulmaz.</p>
+</div>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+<script>
+(() => {
+  const btn = document.getElementById('copy');
+  if (btn) btn.addEventListener('click', async () => {
+    const ta = document.getElementById('prompt');
+    const msg = document.getElementById('copied');
+    try { await navigator.clipboard.writeText(ta.value); msg.textContent = 'Kopyalandı.'; }
+    catch (e) {
+      ta.closest('details').open = true; ta.focus(); ta.select();
+      try { document.execCommand('copy'); msg.textContent = 'Kopyalandı.'; }
+      catch (e2) { msg.textContent = 'Otomatik kopyalanamadı; metni seçip Ctrl+C ile kopyalayın.'; }
+    }
+  });
+  const current = {{ (req.id if req else none) | tojson }};
+  async function poll() {
+    if (document.getElementById('answer') && document.getElementById('answer').value) return; // yazarken yenileme
+    try {
+      const d = await (await fetch('/api/manual', {credentials: 'same-origin'})).json();
+      if (d.pending !== current) { location.reload(); return; }
+    } catch (e) {}
+    setTimeout(poll, 3000);
+  }
+  setTimeout(poll, 3000);
+})();
+</script>
+{% endblock %}

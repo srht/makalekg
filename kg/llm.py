@@ -1,18 +1,23 @@
-"""LLM erişimi: Anthropic API (varsayılan) veya yerel model (OpenAI uyumlu uç nokta).
+"""LLM erişimi: Anthropic API (varsayılan), yerel model (OpenAI uyumlu uç nokta) veya elle
+kopyala-yapıştır (istem kullanıcıya gösterilir, kullanıcı Claude.ai gibi bir sohbete yapıştırıp
+yanıtı geri yapıştırır).
 
-Seçim .env ile yapılır: LLM_BACKEND=anthropic | openai_compat.
+Seçim .env ile yapılır: LLM_BACKEND=anthropic | openai_compat | manual.
 İki işlem gerekir: (1) Pydantic şemasıyla doğrulanmış JSON çıktısı, (2) ajan için araç döngüsü.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Protocol, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from .config import env
+from .config import DATA_DIR, env
 from .schema import strict_json_schema
 
 log = logging.getLogger(__name__)
@@ -205,10 +210,147 @@ class FakeLLM:
         return self.tool_responder(user, tools)
 
 
+# ---------------------------------------------------------------- elle kopyala-yapıştır
+
+
+class ManualBroker(Protocol):
+    """İstemi kullanıcıya iletip yanıtını alan aracı (web sayfası veya terminal).
+
+    `parse` yanıtı doğrular; hata fırlatırsa aracı hatayı kullanıcıya gösterip yeni yanıt ister."""
+
+    def ask(self, kind: str, prompt: str, parse: Callable[[str], Any]) -> Any: ...
+
+
+def extract_json(text: str) -> str:
+    """Sohbet yanıtından JSON'u çıkarır: ```json çitlerini ve öncesi/sonrası açıklamaları atar."""
+    fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
+    if fence:
+        text = fence.group(1)
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end <= start:
+        raise ValueError("yanıtta JSON nesnesi bulunamadı ({ ... } bekleniyor)")
+    return text[start:end + 1]
+
+
+def manual_json_prompt(system: str, user: str, schema: type[BaseModel]) -> str:
+    return (f"{system}\n\n"
+            "YANIT BİÇİMİ: Yanıtın YALNIZCA aşağıdaki JSON şemasına uyan tek bir JSON nesnesi olsun. "
+            "Açıklama yazma; tüm alanları yaz, bilinmeyen alanlara null ver.\n\n"
+            f"JSON ŞEMASI:\n```json\n{json.dumps(strict_json_schema(schema), ensure_ascii=False)}\n```\n\n"
+            f"---\n\n{user}")
+
+
+class ManualLLM:
+    """Elle mod: her LLM çağrısı bir istem olarak kullanıcıya gösterilir.
+
+    Yanıtlar istem özetiyle data/cache/manual/ altında saklanır; aynı istem tekrar sorulmaz
+    (sunucu yeniden başlasa da kaldığı yerden devam eder)."""
+
+    manual = True
+
+    def __init__(self, broker: ManualBroker, cache_dir: Path | None = None, model_name: str | None = None):
+        self.broker = broker
+        self.cache_dir = cache_dir or DATA_DIR / "cache" / "manual"
+        self.model_name = model_name or env("MANUAL_MODEL_NAME", "manual (sohbet arayüzü)")
+
+    def _cached(self, prompt: str) -> tuple[Path, str | None]:
+        path = self.cache_dir / (hashlib.sha1(prompt.encode("utf-8")).hexdigest() + ".txt")
+        return path, (path.read_text(encoding="utf-8") if path.exists() else None)
+
+    def _store(self, path: Path, text: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    def complete_json(self, system: str, user: str, schema: type[T]) -> T:
+        prompt = manual_json_prompt(system, user, schema)
+        path, cached = self._cached(prompt)
+
+        def parse(text: str) -> T:
+            try:
+                return schema.model_validate_json(extract_json(text))
+            except ValidationError as exc:
+                raise ValueError(f"JSON şemaya uymuyor: {exc}") from exc
+
+        if cached is not None:
+            try:
+                return parse(cached)
+            except ValueError:
+                pass
+        holder: dict[str, str] = {}
+
+        def parse_and_keep(text: str) -> T:
+            out = parse(text)
+            holder["text"] = text
+            return out
+
+        result = self.broker.ask(schema.__name__, prompt, parse_and_keep)
+        self._store(path, holder["text"])
+        return result
+
+    def complete_text(self, system: str, user: str) -> str:
+        prompt = f"{system}\n\n---\n\n{user}"
+        path, cached = self._cached(prompt)
+        if cached:
+            return cached
+
+        def parse(text: str) -> str:
+            if not text.strip():
+                raise ValueError("yanıt boş")
+            return text.strip()
+
+        text = self.broker.ask("answer", prompt, parse)
+        self._store(path, text)
+        return text
+
+    def run_tools(self, system: str, user: str, tools: list[Tool], max_turns: int = 12) -> str:
+        raise LLMError("elle modda ajan araç kullanamaz; ajan yerine bağlam derlenmiş tek bir istem kullanılır")
+
+
+class CliBroker:
+    """Terminal için: istemi data/manual/ altına yazar, yanıt dosyasını bekler."""
+
+    def __init__(self, out_dir: Path | None = None):
+        self.out_dir = out_dir or DATA_DIR / "manual"
+        self.n = 0
+
+    def ask(self, kind: str, prompt: str, parse: Callable[[str], Any]) -> Any:
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        self.n += 1
+        stem = self.out_dir / f"{self.n:03d}_{kind}"
+        prompt_path, resp_path = stem.with_suffix(".prompt.md"), stem.with_suffix(".response.txt")
+        prompt_path.write_text(prompt, encoding="utf-8")
+        print(f"\n[elle mod] İstem: {prompt_path} ({len(prompt):,} karakter)\n"
+              f"Sohbete yapıştırın, yanıtı {resp_path} dosyasına kaydedin ve Enter'a basın (iptal: q).")
+        while True:
+            if input("> ").strip().lower() == "q":
+                raise LLMError("kullanıcı iptal etti")
+            if not resp_path.exists():
+                print(f"{resp_path} bulunamadı")
+                continue
+            try:
+                return parse(resp_path.read_text(encoding="utf-8"))
+            except ValueError as exc:
+                print(f"Yanıt geçersiz: {exc}\nDüzeltip tekrar Enter'a basın.")
+
+
+_manual_broker: ManualBroker | None = None
+
+
+def set_manual_broker(broker: ManualBroker) -> None:
+    global _manual_broker
+    _manual_broker = broker
+
+
+def is_manual(llm: Any) -> bool:
+    return bool(getattr(llm, "manual", False))
+
+
 def get_llm() -> LLM:
     backend = (env("LLM_BACKEND", "anthropic") or "anthropic").lower()
     if backend == "anthropic":
         return AnthropicLLM()
     if backend in ("openai_compat", "local"):
         return OpenAICompatLLM()
+    if backend == "manual":
+        return ManualLLM(_manual_broker or CliBroker())
     raise LLMError(f"bilinmeyen LLM_BACKEND: {backend}")

@@ -11,16 +11,20 @@
   <a class="brand" href="/">Kemik–Beyin KG<small>knowledge graph</small></a>
   <nav>
     {% set items = [("/", "Pano"), ("/claims", "İddialar"), ("/hypotheses", "Hipotezler"), ("/ask", "Soru sor"),
-                    ("/spotcheck", "Spot-check"), ("/review", "İnceleme kuyruğu"), ("/reports", "Raporlar"), ("/jobs", "İşler")] %}
+                    ("/spotcheck", "Spot-check"), ("/manual", "Elle yanıt"), ("/review", "İnceleme kuyruğu"), ("/reports", "Raporlar"), ("/jobs", "İşler")] %}
     {% for href, label in items %}
       <a href="{{ href }}" class="{{ 'on' if (nav == href or (href != '/' and nav.startswith(href))) else '' }}">{{ label }}</a>
     {% endfor %}
   </nav>
   <div class="jobpill">
-    {% if current_job %}⏳ <a href="/jobs/{{ current_job.id }}">{{ current_job.title }}</a> çalışıyor{% endif %}
+    {% if current_job %}⏳ <a href="/jobs/{{ current_job.id }}">{{ current_job.title }}</a>
+      {% if current_job.status == "waiting" %}<a href="/manual">yanıtınızı bekliyor</a>{% else %}çalışıyor{% endif %}{% endif %}
   </div>
 </div></header>
 <main>
+{% if manual_pending and nav != "/manual" %}<div class="notice hyp"><b>Yanıtınız bekleniyor:</b> {{ manual_pending.kind_tr }}
+  (adım {{ manual_pending.seq }}{% if manual_pending.job_title %} · {{ manual_pending.job_title }}{% endif %}).
+  <a href="/manual">İstemi kopyala ve yanıtı yapıştır →</a></div>{% endif %}
 {% if error %}<div class="notice bad"><b>Grafa erişilemedi:</b> {{ error }}</div>{% endif %}
 {% block content %}{% endblock %}
 </main>

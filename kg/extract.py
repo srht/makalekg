@@ -18,13 +18,15 @@ from pydantic import BaseModel
 
 from .config import DATA_DIR
 from .fetch import Document, Section, figure_key
-from .llm import LLM, LLMError
+from .llm import LLM, LLMError, is_manual
 from .schema import (SOURCE_SENTENCE_MAX, ExtractedClaim, ExtractionResult, VerificationLabel,
                      VerificationResult, claim_id, utcnow)
 
 log = logging.getLogger(__name__)
 
 MAX_CHUNK_CHARS = 12000
+# Elle modda (kopyala-yapıştır) istem sayısını azaltmak için tüm makale tek istemde gönderilir
+MANUAL_MAX_CHARS = 150000
 
 EXTRACTION_SYSTEM = """You extract experimental claims from biomedical papers into a knowledge graph.
 
@@ -118,9 +120,9 @@ class Extractor:
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self.review_queue = review_queue or DATA_DIR / "review_queue.jsonl"
 
-    def _units(self, doc: Document) -> Iterable[tuple[str, str, list[Section]]]:
-        """(bölüm adı, ana metin, bağlam legend'leri) birimleri."""
-        legends = doc.legends()
+    @staticmethod
+    def _extractable(doc: Document) -> list[Section]:
+        out = []
         for sec in doc.sections:
             if sec.kind == "legend":
                 continue
@@ -128,6 +130,31 @@ class Extractor:
                 continue
             if sec.kind == "abstract" and doc.fulltext:
                 continue  # tam metin varken özet, şekilsiz yinelenen deneyler üretir
+            out.append(sec)
+        return out
+
+    def _manual_units(self, doc: Document) -> Iterable[tuple[str, str, list[Section]]]:
+        """Elle mod: bölümler başlıklarıyla birleştirilir, tüm legend'ler bağlam olur → genelde makale başına 1 birim."""
+        legends = doc.legends()
+        parts, size, n = [], 0, 1
+        for sec in self._extractable(doc):
+            for chunk in chunk_section(sec, MANUAL_MAX_CHARS):
+                block = f"## {sec.name}\n{chunk}"
+                if size + len(block) > MANUAL_MAX_CHARS and parts:
+                    yield f"Full text (part {n})", "\n\n".join(parts), legends
+                    parts, size, n = [], 0, n + 1
+                parts.append(block)
+                size += len(block)
+        if parts or legends:
+            yield (f"Full text (part {n})" if n > 1 else "Full text"), "\n\n".join(parts) or "(legends only)", legends
+
+    def _units(self, doc: Document) -> Iterable[tuple[str, str, list[Section]]]:
+        """(bölüm adı, ana metin, bağlam legend'leri) birimleri."""
+        if is_manual(self.llm):
+            yield from self._manual_units(doc)
+            return
+        legends = doc.legends()
+        for sec in self._extractable(doc):
             for i, chunk in enumerate(chunk_section(sec)):
                 name = sec.name if i == 0 else f"{sec.name} (part {i + 1})"
                 yield name, chunk, referenced_legends(chunk, doc)
@@ -144,8 +171,10 @@ class Extractor:
 
     def _prompt(self, doc: Document, name: str, text: str, context: list[Section]) -> str:
         ctx = "\n\n".join(s.text for s in context)
+        scope = ("Extract claims from BOTH the primary text and the figure legends.\n"
+                 if name.startswith("Full text") else "")
         return (f"Paper DOI: {doc.doi}\nSection: {name}\n"
-                f"Full text available: {doc.fulltext}\n\n"
+                f"Full text available: {doc.fulltext}\n{scope}\n"
                 f"=== PRIMARY TEXT ===\n{text}\n\n"
                 f"=== FIGURE LEGENDS (context) ===\n{ctx or '(none)'}\n")
 

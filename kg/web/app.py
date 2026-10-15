@@ -27,7 +27,9 @@ from markupsafe import Markup
 
 from .. import service
 from ..config import DATA_DIR, REPORTS_DIR, ensure_dirs, env, load_dotenv
+from ..llm import set_manual_broker
 from .jobs import JobManager
+from .manual import WebBroker
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -110,6 +112,8 @@ def invalidate(_job=None) -> None:
 
 
 jobs = JobManager(on_finish=invalidate)
+broker = WebBroker(jobs)
+set_manual_broker(broker)
 
 
 def run_with_store(fn, *args, **kwargs):
@@ -161,6 +165,7 @@ def page(request: Request, name: str, **ctx) -> HTMLResponse:
     current = jobs.current
     return templates.TemplateResponse(request, name, {
         "csrf": csrf_token(request.state.user), "current_job": current, "queue_busy": jobs.busy(),
+        "manual_pending": broker.pending,
         "nav": request.url.path, **ctx})
 
 
@@ -174,10 +179,14 @@ def healthz():
 
 def config_status() -> dict[str, Any]:
     llm_backend = (env("LLM_BACKEND", "anthropic") or "anthropic").lower()
-    llm_ready = bool(env("ANTHROPIC_API_KEY") or env("ANTHROPIC_AUTH_TOKEN")) if llm_backend == "anthropic" \
-        else bool(env("OPENAI_COMPAT_BASE_URL"))
-    return {"llm_backend": llm_backend, "llm_ready": llm_ready,
-            "llm_model": env("LLM_MODEL", "claude-opus-5-5") if llm_backend == "anthropic" else env("OPENAI_COMPAT_MODEL"),
+    if llm_backend == "anthropic":
+        llm_ready, model = bool(env("ANTHROPIC_API_KEY") or env("ANTHROPIC_AUTH_TOKEN")), env("LLM_MODEL", "claude-opus-5-5")
+    elif llm_backend == "manual":
+        llm_ready, model = True, env("MANUAL_MODEL_NAME", "manual (sohbet arayüzü)")
+    else:
+        llm_ready, model = bool(env("OPENAI_COMPAT_BASE_URL")), env("OPENAI_COMPAT_MODEL")
+    return {"llm_backend": llm_backend, "llm_ready": llm_ready, "manual": llm_backend == "manual",
+            "llm_model": model,
             "graph_backend": backend(), "contact_email": bool(env("CONTACT_EMAIL")),
             "seed_pdf": (DATA_DIR / "uploads" / "seed.pdf").exists()}
 
@@ -314,7 +323,56 @@ def job_api(job_id: str, since: int = 0):
     d["log_len"] = len(job.log)
     if job.kind == "ask" and job.status == "done" and isinstance(job.result, dict):
         d["answer_html"] = str(render_md(job.result.get("answer") or ""))
+    d["manual_pending"] = bool(broker.pending and broker.pending.job_id == job_id)
     return JSONResponse(d)
+
+
+# ---------------------------------------------------------------- elle (kopyala-yapıştır) mod
+
+
+@app.get("/manual", response_class=HTMLResponse)
+def manual_page(request: Request):
+    return page(request, "manual.html", req=broker.pending, cfg=config_status())
+
+
+@app.get("/api/manual")
+def manual_api():
+    req = broker.pending
+    return {"pending": req.id if req else None, "error": req.error if req else None,
+            "job_id": req.job_id if req else None}
+
+
+@app.get("/manual/{req_id}/prompt.md")
+def manual_prompt_download(req_id: str):
+    req = broker.pending
+    if req is None or req.id != req_id:
+        raise HTTPException(404, "Bekleyen istem yok")
+    return Response(req.prompt, media_type="text/markdown; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="istem_{req.seq:02d}_{req.kind}.md"'})
+
+
+@app.post("/manual/{req_id}")
+def manual_submit(request: Request, req_id: str, csrf: str = Form(...), answer: str = Form(...)):
+    check_csrf(request, csrf)
+    req = broker.pending
+    if req is None or req.id != req_id or not broker.submit(req_id, answer):
+        return RedirectResponse("/manual", status_code=303)
+    # İşçinin yanıtı doğrulamasını kısa süre bekle: hata varsa aynı sayfada göster
+    attempts = req.attempts
+    end = time.monotonic() + 5
+    while time.monotonic() < end and broker.pending is req and req.attempts == attempts:
+        time.sleep(0.1)
+    if broker.pending is None and req.job_id:
+        return RedirectResponse(f"/jobs/{req.job_id}", status_code=303)
+    return RedirectResponse("/manual", status_code=303)
+
+
+@app.post("/manual/{req_id}/cancel")
+def manual_cancel(request: Request, req_id: str, csrf: str = Form(...)):
+    check_csrf(request, csrf)
+    req = broker.pending
+    broker.cancel(req_id)
+    return RedirectResponse(f"/jobs/{req.job_id}" if req and req.job_id else "/manual", status_code=303)
 
 
 # ---------------------------------------------------------------- iş başlatma
