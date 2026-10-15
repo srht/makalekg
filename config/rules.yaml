@@ -1,0 +1,30 @@
+# İzinli zincir kalıpları (SPEC "Kural tabanlı zincirler").
+# Her kalıp: düğüm tipleri dizisi + kenar (yüklem) dizisi. "*" her tipe/yükleme uyar.
+# A ile son düğüm arasında herhangi bir kanıt kenarı (A -[*]-> C) yoksa aday üretilir.
+patterns:
+  - name: intervention_molecule_protection
+    description: "müdahale → molekül → koruyucu etki"
+    node_types: [Intervention, Gene, Outcome]
+    predicates: [INCREASES, PROTECTS]
+    hypothesis_predicate: PROTECTS
+  - name: intervention_molecule_increase_outcome
+    description: "müdahale → molekül → sonuçta artış"
+    node_types: [Intervention, Gene, "*"]
+    predicates: [INCREASES, INCREASES]
+    hypothesis_predicate: INCREASES
+  - name: required_mediator_transfer
+    description: "molekül A bloke edilince etki kayboluyor + molekül A başka modelde de var"
+    node_types: [Gene, "*", "*"]
+    predicates: [REQUIRES_INV, "*"]   # _INV: kenar ters yönde gezilir (B REQUIRES A)
+    hypothesis_predicate: MEDIATES
+  - name: mediator_chain
+    description: "A, B'yi aracılar; B, C'yi artırır"
+    node_types: ["*", "*", "*"]
+    predicates: [MEDIATES, INCREASES]
+    hypothesis_predicate: INCREASES
+  - name: three_step_protection
+    description: "müdahale → molekül → molekül → koruma (3 adım)"
+    node_types: [Intervention, Gene, Gene, Outcome]
+    predicates: [INCREASES, INCREASES, PROTECTS]
+    hypothesis_predicate: PROTECTS
+max_path_length: 3

@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+data/*
+!data/.gitkeep
+reports/*
+!reports/.gitkeep
+spotcheck.html

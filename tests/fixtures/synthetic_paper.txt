@@ -1,0 +1,31 @@
+Abstract
+
+SYNTHETIC TEST FIXTURE — not real data. Tibial loading improved recovery after brain injury in mice.
+
+Introduction
+
+Bone is an endocrine organ that signals to distant tissues.
+
+Results
+
+Tibial loading improves motor function after TBI. DCTAL improved pole test performance in TBI mice (n = 12 mice per group; Fig. 1b). DCTAL increased serum Hsp70 levels in TBI mice (Fig. 1c).
+
+Osteocyte Piezo1 is required for the benefit. DCTAL ameliorated motor and cognitive deficits in TBI-Piezo1fl/fl mice, but not in TBI-Piezo1Sost-Cre/ERT2 mice (Fig. 2d-h). Two mice were excluded from the analysis because of surgical complications.
+
+Hsp70 protects neurons. Recombinant Hsp70 reduced neuronal loss in TBI mice (Fig. 3a).
+
+Methods
+
+Tibial loading. Mice received dynamic compressive loading of the tibia at 2 Hz for 1,200 cycles per session. No animals were excluded from the analyses.
+
+Statistics. Data are mean ± s.e.m.
+
+Fig. 1 | Tibial loading improves recovery. b, Pole test after DCTAL, n = 10 mice per group. c, Serum Hsp70, n = 8 mice. Loading was applied at 4 Hz.
+
+Fig. 2 | Piezo1 deletion in osteocytes abolishes the effect. d-h, n = 14, 14, 14 and 17 mice.
+
+Fig. 3 | Hsp70 is neuroprotective. a, NeuN+ cell counts, n = 6 mice.
+
+References
+
+1. Some reference.

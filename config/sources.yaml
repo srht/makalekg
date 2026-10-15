@@ -1,0 +1,39 @@
+seed_sets:
+  bone_brain:
+    - doi: 10.1038/s41593-026-02422-w
+      role: seed
+      pdf: data/seed.pdf
+  cholesterol_tracing:
+    - doi: 10.1093/eurheartj/ehx144          # Ference 2017, LDL nedenselliği
+      role: causality_consensus
+    - doi: 10.1016/s0140-6736(12)60312-2     # Voight 2012, HDL MR
+      role: contradicting_evidence
+    - title: "Overexpression of apolipoprotein A-I promotes reverse transport of cholesterol from macrophages to feces in vivo"
+      year: 2003
+      journal: Circulation
+      role: method_origin                     # DOI keşif adımında çözülecek
+    - title: "A novel approach to measuring macrophage-specific reverse cholesterol transport in vivo in humans"
+      year: 2017
+      journal: J Lipid Res
+      role: method_human                      # DOI keşif adımında çözülecek
+    - doi: 10.1186/1743-7075-9-25            # Annema & Tietge 2012
+      role: review_hub
+    - doi: 10.1016/s0140-6736(19)31794-5     # Waksman 2019, LRP
+      role: imaging_cohort
+query_terms:
+  bone_brain:
+    - PIEZO1 osteocyte
+    - HSP70 brain injury
+    - IL-1R2 brain injury
+    - APOL11a
+    - BDNF bone
+    - PF4 cognition
+    - osteokine brain
+    - bone loading traumatic brain injury
+    - bone stroke recovery
+expansion:
+  hops: 1                 # 1–2
+  max_papers_per_set: 200
+  include_references: true
+  include_citations: true
+  max_query_results_per_term: 25

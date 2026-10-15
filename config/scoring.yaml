@@ -1,0 +1,40 @@
+# Güven katsayıları (SPEC "Güven puanlama"). Başlangıç değerleridir; buradan ayarlanır.
+w_design:
+  rct_human: 1.0
+  observational_human: 0.7
+  in_vivo: 0.5          # in vivo hayvan
+  ex_vivo: 0.35
+  in_vitro: 0.25
+  unknown: 0.25
+w_species:
+  human: 1.0
+  pig: 0.8
+  primate: 0.8
+  rodent: 0.6           # mouse, rat
+  cell_line: 0.4
+  unknown: 0.4
+w_n:                    # en küçük grup büyüklüğüne göre; alt sınırlar
+  - {min: 20, w: 1.0}
+  - {min: 10, w: 0.8}
+  - {min: 5, w: 0.6}
+  - {min: 0, w: 0.4}
+w_n_unknown: 0.4
+w_blind:
+  blinded: 1.0
+  not_blinded: 0.7      # körlemesiz veya belirtilmemiş
+w_repl:
+  none: 0.6
+  one: 0.85
+  two_plus: 1.0
+  contradicted_factor: 0.5
+chain:
+  length_decay: 0.8     # 0.8^(L-1)
+  penalties:
+    species_mismatch: 0.6
+    tissue_mismatch: 0.7
+    dose_unclear: 0.8
+    direction_conflict: 0.3
+final:
+  w_chain: 0.6
+  w_embed: 0.4
+hypothesis_min_score: 0.01   # bunun altındaki adaylar yazılmaz
