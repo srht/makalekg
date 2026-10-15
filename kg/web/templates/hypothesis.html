@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}{{ h.subject }} → {{ h.object }} — Hipotez{% endblock %}
+{% block content %}
+<p class="small"><a href="/hypotheses">← Hipotezler</a></p>
+<h1>{{ h.subject }} → {{ h.object }} <span class="muted">({{ h.predicate }})</span></h1>
+<div class="notice hyp"><b>Bu bir HİPOTEZDİR, kanıt değildir.</b> Durum: {% include "_hstatus.html" %}</div>
+
+<div class="grid cols-3">
+  <div class="card stat"><div class="v">{{ h.score | num }}</div><div class="k">nihai skor S</div></div>
+  <div class="card stat"><div class="v">{{ h.chain_confidence | num }}</div><div class="k">zincir güveni C</div></div>
+  <div class="card stat"><div class="v">{{ h.embed_score | num(2) }}</div><div class="k">embedding P</div></div>
+</div>
+
+<h2>En zayıf halka</h2>
+<div class="card">{{ h.weakest_link }}</div>
+
+<h2>Zincir</h2>
+<div class="card"><ol class="chain">
+{% for l in h.path %}
+  <li>
+    <b>{{ l.from_name }}</b> —{{ l.predicate }}{% if l.inverse %} (ters yönde okunur){% endif %}→ <b>{{ l.to_name }}</b>
+    <span class="badge">E = {{ l.E | num }}</span>
+    <div class="small muted"><a href="https://doi.org/{{ l.source_doi }}" target="_blank" rel="noopener">doi:{{ l.source_doi }}</a> · {{ l.evidence }}</div>
+    {% if l.source_sentence %}<blockquote class="small">{{ l.source_sentence }}</blockquote>{% endif %}
+  </li>
+{% endfor %}
+</ol></div>
+
+<h2>Gerekçe</h2>
+<div class="card md">{{ h.rationale | md }}</div>
+
+{% if h.literature_dois %}
+<h2>Literatür kontrolü</h2>
+<div class="card small">Bu ilişkiyi test etmiş olabilecek makaleler (kanıt grafına ancak boru hattından geçerek girerler):
+<ul>{% for d in h.literature_dois %}<li><a href="https://doi.org/{{ d }}" target="_blank" rel="noopener">doi:{{ d }}</a></li>{% endfor %}</ul></div>
+{% endif %}
+<p class="small muted">Üreticiler: {{ h.generators | join(", ") }} · {{ h.created_at }} · Ayrıntılı kart: Raporlar → hypotheses/</p>
+{% endblock %}

@@ -8,6 +8,7 @@
   kg backtest --cutoff 2024                     backtest raporu (reports/backtest.md)
   kg accept --phase N                           faz kabul kriterlerini kontrol et
   kg unresolved                                 normalize edilemeyen varlıklar ve bulanık eşleşme önerileri
+  kg web [--port 8000]                          web arayüzü
 """
 from __future__ import annotations
 
@@ -17,146 +18,95 @@ import logging
 import sys
 from pathlib import Path
 
-from kg.config import load_dotenv, sources_config
-from kg.discover import norm_doi
+from kg.config import load_dotenv
 
 
 def _store(args):
-    from kg.graph import get_store
-    return get_store(getattr(args, "backend", None))
+    from kg.service import open_store
+    return open_store(getattr(args, "backend", None))
+
+
+def _print(obj) -> None:
+    print(json.dumps(obj, ensure_ascii=False, indent=1, default=str))
 
 
 def cmd_ingest(args) -> int:
-    from kg.llm import get_llm
-    from kg.pipeline import Pipeline
-    from kg.validate import acceptance
-    from kg.validate.spotcheck import build_spotcheck
+    from kg import service
 
     store = _store(args)
-    pipe = Pipeline(store, get_llm(), offline=args.offline, force=args.force)
-    if args.phase == 1:
-        papers, cites = pipe.phase1_papers(args.pdf), []
-    else:
-        papers, cites = pipe.expansion_papers(args.set or None)
-    if args.limit:
-        papers = papers[: args.limit]
-    summary = pipe.ingest(papers, cites)
-    html, items = build_spotcheck(store, n=10, run_id=summary.run.id)
-    info = summary.as_dict()
-    print(json.dumps(info, ensure_ascii=False, indent=1))
-    print(f"\nspotcheck: {html} ({len(items)} kenar) · tutarsızlıklar: reports/inconsistencies.md")
-    snap = store.snapshot()
-    if args.phase == 1:
-        seed = norm_doi(sources_config()["seed_sets"]["bone_brain"][0]["doi"])
-        report = acceptance.write_report(1, acceptance.phase1(snap, seed), info)
-    else:
-        report = acceptance.write_report(2, acceptance.phase2(snap, summary.normalization_rate), info)
-    print(f"kabul raporu: {report}")
-    store.close()
+    try:
+        _print(service.ingest(store, phase=args.phase, pdf=args.pdf, sets=args.set, limit=args.limit,
+                              offline=args.offline, force=args.force))
+    finally:
+        store.close()
     return 0
 
 
 def cmd_infer(args) -> int:
-    from kg.infer.run import run_inference
-    from kg.validate import acceptance
+    from kg import service
 
     store = _store(args)
-    agent_fn = literature_fn = reingest_fn = None
-    if args.agent or args.literature:
-        from kg.llm import get_llm
-        llm = get_llm()
-    if args.agent:
-        from kg.infer.agent import GraphAgent
-        agent_fn = lambda snap: GraphAgent(llm, snap, _cypher(args)).propose(args.task)
-    if args.literature:
-        from kg.discover import Discoverer
-        from kg.infer.literature import literature_search
-        from kg.pipeline import Pipeline
-        disc = Discoverer()
-        literature_fn = lambda snap, h: [r["doi"] for r in literature_search(disc, snap, h.subject_key, h.object_key)]
-        if args.ingest_literature:
-            pipe = Pipeline(store, llm)
-            reingest_fn = lambda dois: pipe.ingest_dois(dois[: args.max_literature])
-    scored = run_inference(store, use_embed=args.embed, agent_fn=agent_fn, literature_fn=literature_fn,
-                           reingest_fn=reingest_fn)
-    for s in scored[:20]:
-        h = s.hypothesis
-        print(f"{h.score:.3f}  {h.subject_key} -{h.predicate}-> {h.object_key}  [{h.status.value}]")
-    print(f"\n{len(scored)} hipotez · kartlar: reports/hypotheses/")
-    report = acceptance.write_report(3, acceptance.phase3(store.snapshot()))
-    print(f"kabul raporu: {report}")
-    store.close()
+    try:
+        _print(service.infer(store, embed=args.embed, agent=args.agent, task=args.task, literature=args.literature,
+                             ingest_literature=args.ingest_literature, max_literature=args.max_literature,
+                             backend=args.backend))
+        print("kartlar: reports/hypotheses/")
+    finally:
+        store.close()
     return 0
 
 
-def _cypher(args):
-    if (getattr(args, "backend", None) or "").lower() == "memory":
-        return None
-    from kg.config import env
-    if (env("GRAPH_BACKEND", "neo4j") or "").lower() != "neo4j":
-        return None
-    from kg.infer.agent import ReadOnlyCypher
-    return ReadOnlyCypher()
-
-
 def cmd_ask(args) -> int:
-    from kg.infer.agent import GraphAgent
-    from kg.llm import get_llm
+    from kg import service
 
     store = _store(args)
-    agent = GraphAgent(get_llm(), store.snapshot(), _cypher(args))
-    print(agent.ask(args.question))
-    store.close()
+    try:
+        print(service.ask(store, args.question, backend=args.backend)["answer"])
+    finally:
+        store.close()
     return 0
 
 
 def cmd_spotcheck(args) -> int:
-    from kg.validate.spotcheck import apply_results, build_spotcheck
+    from kg import service
 
     store = _store(args)
-    if args.results:
-        summary = apply_results(store, json.loads(Path(args.results).read_text(encoding="utf-8")))
-        print(json.dumps(summary, ensure_ascii=False, indent=1))
-        if not summary["passed"]:
-            print("Hata oranı %10'u aştı: çıkarım promptu düzeltilmeli; partinin kenarları needs_review işaretlendi.")
-    else:
-        path, items = build_spotcheck(store, n=args.n, run_id=args.run, seed=args.seed)
-        print(f"{path} ({len(items)} kenar)")
-    store.close()
+    try:
+        if args.results:
+            summary = service.spotcheck_apply(store, json.loads(Path(args.results).read_text(encoding="utf-8")))
+            _print(summary)
+            if not summary["passed"]:
+                print("Hata oranı %10'u aştı: çıkarım promptu düzeltilmeli; partinin kenarları needs_review işaretlendi.")
+        else:
+            _print(service.spotcheck_build(store, n=args.n, run_id=args.run, seed=args.seed))
+    finally:
+        store.close()
     return 0
 
 
 def cmd_backtest(args) -> int:
-    from kg.validate import acceptance
-    from kg.validate.backtest import run_backtest
+    from kg import service
 
     store = _store(args)
-    result = run_backtest(store.snapshot(), args.cutoff, k=args.k)
-    print(json.dumps({k: v for k, v in result.items() if k not in ("top", "calibration")}, ensure_ascii=False, indent=1))
-    print("rapor: reports/backtest.md")
-    acceptance.write_report(4, acceptance.phase4())
-    store.close()
+    try:
+        result = service.backtest(store, args.cutoff, k=args.k)
+        _print({k: v for k, v in result.items() if k != "top"})
+        print("rapor: reports/backtest.md")
+    finally:
+        store.close()
     return 0
 
 
 def cmd_accept(args) -> int:
-    from kg.validate import acceptance
+    from kg import service
 
     store = _store(args)
-    snap = store.snapshot()
-    if args.phase == 1:
-        checks = acceptance.phase1(snap, norm_doi(sources_config()["seed_sets"]["bone_brain"][0]["doi"]))
-    elif args.phase == 2:
-        checks = acceptance.phase2(snap)
-    elif args.phase == 3:
-        checks = acceptance.phase3(snap)
-    else:
-        checks = acceptance.phase4()
-    path = acceptance.write_report(args.phase, checks)
+    try:
+        checks = service.acceptance_check(store, args.phase)
+    finally:
+        store.close()
     for c in checks:
         print({True: "GEÇTİ ", False: "KALDI ", None: "BEKLİYOR"}[c["passed"]], c["criterion"], "—", c["detail"])
-    print(f"rapor: {path}")
-    store.close()
     return 0 if all(c["passed"] for c in checks) else 1
 
 
@@ -164,9 +114,17 @@ def cmd_unresolved(args) -> int:
     from kg.pipeline import unresolved_entities
 
     store = _store(args)
-    for row in unresolved_entities(store):
-        print(json.dumps(row, ensure_ascii=False))
-    store.close()
+    try:
+        for row in unresolved_entities(store):
+            print(json.dumps(row, ensure_ascii=False))
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_web(args) -> int:
+    import uvicorn
+    uvicorn.run("kg.web.app:app", host=args.host, port=args.port, proxy_headers=True, forwarded_allow_ips="*")
     return 0
 
 
@@ -216,6 +174,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("unresolved", help="normalize edilemeyen varlıklar")
     s.set_defaults(fn=cmd_unresolved)
+
+    s = sub.add_parser("web", help="web arayüzünü başlat")
+    s.add_argument("--host", default="0.0.0.0")
+    s.add_argument("--port", type=int, default=8000)
+    s.set_defaults(fn=cmd_web)
     return p
 
 

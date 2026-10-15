@@ -16,6 +16,7 @@ dependencies = [
 
 [project.optional-dependencies]
 embed = ["pykeen>=1.10"]
+web = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "jinja2>=3.1", "python-multipart>=0.0.9", "markdown>=3.6"]
 dev = ["pytest>=8"]
 
 [project.scripts]
@@ -27,7 +28,10 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 py-modules = ["cli"]
-packages = ["kg", "kg.infer", "kg.validate"]
+packages = ["kg", "kg.infer", "kg.validate", "kg.web"]
+
+[tool.setuptools.package-data]
+"kg.web" = ["templates/*.html", "static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

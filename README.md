@@ -23,7 +23,7 @@ osteocyte PIEZO1*, Nature Neuroscience (2026), doi:10.1038/s41593-026-02422-w.
 python -m venv .venv && source .venv/bin/activate
 pip install -e '.[dev]'            # PyKEEN için: pip install -e '.[embed]'
 cp .env.example .env               # ANTHROPIC_API_KEY, NEO4J_PASSWORD, CONTACT_EMAIL ...
-docker compose up -d               # Neo4j 5 → http://localhost:7474
+docker compose -f docker-compose.yml -f docker-compose.local.yml up -d neo4j   # Neo4j 5 → http://localhost:7474
 ```
 
 LLM arka ucu `.env` ile seçilir: `LLM_BACKEND=anthropic` (varsayılan model `claude-opus-5-5`,
@@ -32,13 +32,52 @@ yapılandırılmış JSON çıktısı, adaptive thinking, sunucu tarafı `fallba
 Neo4j olmadan denemek için `GRAPH_BACKEND=memory` (graf `data/graph.json`'a yazılır) ya da her komutta
 `--backend memory`.
 
-## Kullanım
+## Dokploy'da çalıştırma (web arayüzü)
+
+Depoda Dokploy'un doğrudan kullanabileceği bir `docker-compose.yml` var: `web` (FastAPI arayüzü, port 8000)
+ve `neo4j` (5.26 community). Veriler adlandırılmış birimlerde kalır (`kg_data`, `kg_reports`, `neo4j_data`),
+yeniden dağıtımda kaybolmaz.
+
+1. **Create Service → Compose**, kaynak olarak bu GitHub deposunu ve dalı seçin; Compose Path: `./docker-compose.yml`.
+2. **Environment** sekmesine en az şunları girin:
+   ```
+   APP_PASSWORD=<güçlü bir şifre>          # arayüz HTTP Basic şifresi (kullanıcı: admin)
+   NEO4J_PASSWORD=<en az 8 karakter>
+   ANTHROPIC_API_KEY=sk-ant-...
+   CONTACT_EMAIL=siz@ornek.com              # Crossref/Europe PMC nazik kullanım
+   APP_SECRET=<rastgele uzun dize>          # isteğe bağlı; form jetonları yeniden başlatmada geçerli kalır
+   ```
+   PyKEEN de kurulsun isterseniz `WITH_EMBED=1` (imaj büyür, derleme uzar).
+3. **Advanced → Isolated Deployments**'ı açın. Böylece Dokploy domain eklerken `web` ile `neo4j` aynı ağda kalır.
+   (Kapalı kalırsa Dokploy yalnızca seçilen servisi `dokploy-network`'e ekler ve `web` Neo4j'e ulaşamayabilir.)
+4. **Domains** sekmesinde domain ekleyin: Service `web`, Container Port `8000`, HTTPS açık (Let's Encrypt).
+5. **Deploy**. İlk açılışta Neo4j'in sağlık kontrolünü geçmesi ~30–60 sn sürer; `web` ondan sonra başlar.
+
+Neo4j ve web portları dışarı açılmaz (`expose`); erişim yalnızca Traefik üzerinden domain ile olur.
+Neo4j Browser'a bakmak isterseniz Dokploy terminalinden `cypher-shell` kullanın ya da geçici olarak port yayınlayın.
+
+**Arayüz:** Pano (sayılar, Faz 1 PDF yükleme, Faz 2 genişleme, hipotez üretimi, backtest, kabul kontrolleri),
+İddialar (kanıt düzeyi + kaynak cümle), Hipotezler (zincir, en zayıf halka; kanıttan görsel olarak ayrı),
+Soru sor (ajan, düz Türkçe), Spot-check (doğru/kısmen/yanlış işaretleme sunucuya kaydedilir),
+İnceleme kuyruğu, Raporlar, İşler (canlı log). Uzun işler arka planda tek bir kuyrukta sırayla çalışır.
+
+**Yerel deneme:**
+
+```bash
+cp .env.example .env   # APP_PASSWORD, NEO4J_PASSWORD, ANTHROPIC_API_KEY doldurun
+docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
+# → http://localhost:8000 (admin / APP_PASSWORD), Neo4j Browser http://localhost:7474
+```
+
+Docker olmadan: `pip install -e '.[web]'`, `GRAPH_BACKEND=memory kg web`.
+
+## Komut satırı
 
 ```bash
 # Faz 1 — tek makale (PDF'i data/seed.pdf olarak ekleyin; JATS açık erişimde varsa o kullanılır)
 kg ingest --phase 1 --pdf data/seed.pdf
-#  → spotcheck.html, reports/inconsistencies.md, reports/phase1_acceptance.md
-#  spotcheck.html'i tarayıcıda açın, 10 kenarı işaretleyin, JSON'u indirin:
+#  → reports/spotcheck.html, reports/inconsistencies.md, reports/phase1_acceptance.md
+#  reports/spotcheck.html'i tarayıcıda açın (ya da web arayüzündeki Spot-check sayfasını kullanın), 10 kenarı işaretleyin, JSON'u indirin:
 kg spotcheck --results spotcheck_results_<run>.json
 kg accept --phase 1
 
@@ -80,7 +119,10 @@ kg/
   pipeline.py    ingest orkestrasyonu
   infer/         rules.py · embed.py (PyKEEN) · agent.py (salt-okunur) · literature.py · writer.py · run.py
   validate/      spotcheck.py · consistency.py · backtest.py · acceptance.py
-cli.py           ingest | infer | ask | spotcheck | backtest | accept | unresolved
+  service.py     CLI ve web'in ortak servis katmanı
+  web/           FastAPI arayüzü: app.py, jobs.py (arka plan iş kuyruğu), templates/, static/
+cli.py           ingest | infer | ask | spotcheck | backtest | accept | unresolved | web
+Dockerfile, docker-compose.yml (Dokploy), docker-compose.local.yml (yerel port yayını)
 data/            ham metin, json çıkarımlar, review_queue.jsonl (git'e girmez)
 reports/         hipotez kartları, tutarsızlık, backtest ve kabul raporları (git'e girmez)
 ```

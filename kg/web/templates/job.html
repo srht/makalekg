@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}{{ job.title }} — İş{% endblock %}
+{% block content %}
+<p class="small"><a href="/jobs">← İşler</a></p>
+<div class="row-between"><h1>{{ job.title }}</h1><span id="status">{% set j = job %}{% include "_status.html" %}</span></div>
+<p class="small muted">Oluşturma {{ job.created_at }} · <span id="times">{{ job.started_at or "" }} {{ ("→ " ~ job.finished_at) if job.finished_at else "" }}</span></p>
+
+{% if job.kind == "ask" %}
+<div class="card"><h3>Soru</h3><p>{{ job.params.question }}</p></div>
+<h2>Yanıt</h2>
+<div class="card md answer" id="answer">{% if job.status == "done" and job.result %}{{ job.result.answer | md }}{% else %}<span class="muted">Yanıt hazırlanıyor…</span>{% endif %}</div>
+{% endif %}
+
+<div id="error">{% if job.error %}<div class="notice bad"><b>Hata:</b> {{ job.error }}</div>{% endif %}</div>
+
+<div id="result">
+{% if job.status == "done" and job.result and job.kind != "ask" %}
+<h2>Sonuç</h2>
+<pre class="log">{{ job.result | tojson(indent=1) }}</pre>
+{% endif %}
+</div>
+
+<h2>Log</h2>
+<pre class="log" id="log">{{ job.log | join("\n") }}</pre>
+<div class="actions">
+  {% if job.kind in ("ingest", "spotcheck") %}<a class="btn secondary" href="/spotcheck">Spot-check'e git</a>{% endif %}
+  {% if job.kind == "infer" %}<a class="btn secondary" href="/hypotheses">Hipotezlere git</a>{% endif %}
+  {% if job.kind in ("ingest", "infer", "backtest", "accept") %}<a class="btn secondary" href="/reports">Raporlar</a>{% endif %}
+  {% if job.kind == "ingest" %}<a class="btn secondary" href="/claims">İddialar</a>{% endif %}
+</div>
+{% endblock %}
+{% block scripts %}
+{% if job.status in ("queued", "running") %}
+<script>
+(() => {
+  const id = {{ job.id | tojson }};
+  const logEl = document.getElementById('log');
+  let n = {{ job.log | length }};
+  const labels = {done: ['good', 'tamamlandı'], failed: ['bad', 'başarısız'], interrupted: ['bad', 'yarıda kaldı'],
+                  running: ['warn', 'çalışıyor'], queued: ['', 'sırada']};
+  async function tick() {
+    try {
+      const r = await fetch(`/api/jobs/${id}?since=${n}`, {credentials: 'same-origin'});
+      if (!r.ok) throw new Error(r.status);
+      const d = await r.json();
+      if (d.log.length) {
+        const atBottom = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 20;
+        logEl.textContent += (logEl.textContent ? '\n' : '') + d.log.join('\n');
+        if (atBottom) logEl.scrollTop = logEl.scrollHeight;
+      }
+      n = d.log_len;
+      const [cls, txt] = labels[d.status] || ['', d.status];
+      document.getElementById('status').innerHTML = `<span class="badge ${cls}">${txt}</span>`;
+      if (d.status === 'running' || d.status === 'queued') { setTimeout(tick, 2000); return; }
+      location.reload();
+    } catch (e) { setTimeout(tick, 5000); }
+  }
+  setTimeout(tick, 1500);
+})();
+</script>
+{% endif %}
+{% endblock %}

@@ -13,7 +13,7 @@ import random
 from pathlib import Path
 from typing import Any
 
-from ..config import DATA_DIR, ROOT
+from ..config import DATA_DIR, REPORTS_DIR
 from ..graph import EVIDENCE_EDGE_TYPES, GraphSnapshot, GraphStore
 from ..schema import EVIDENCE_PREDICATES
 
@@ -120,7 +120,7 @@ def build_spotcheck(store: GraphStore, n: int = 10, run_id: str | None = None, s
     snap = store.snapshot()
     run_id = run_id or latest_run_id(snap)
     items = sample_edges(snap, n, run_id, seed)
-    out = out or ROOT / "spotcheck.html"
+    out = out or REPORTS_DIR / "spotcheck.html"
     out.write_text(render_html(items, run_id), encoding="utf-8")
     (DATA_DIR / "spotcheck_sample.json").write_text(json.dumps({"run_id": run_id, "items": items}, ensure_ascii=False,
                                                                indent=1), encoding="utf-8")

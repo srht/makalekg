@@ -10,8 +10,9 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_DIR = ROOT / "config"
-DATA_DIR = ROOT / "data"
-REPORTS_DIR = ROOT / "reports"
+# Konteynerde kalıcı birimlere yönlendirmek için ortam değişkeniyle değiştirilebilir
+DATA_DIR = Path(os.environ.get("KG_DATA_DIR") or ROOT / "data")
+REPORTS_DIR = Path(os.environ.get("KG_REPORTS_DIR") or ROOT / "reports")
 
 
 def load_dotenv(path: Path | None = None) -> None:

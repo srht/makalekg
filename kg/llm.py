@@ -63,6 +63,8 @@ class AnthropicLLM:
     def __init__(self, model: str | None = None, effort: str = "high"):
         import anthropic
 
+        if not (env("ANTHROPIC_API_KEY") or env("ANTHROPIC_AUTH_TOKEN") or env("ANTHROPIC_PROFILE")):
+            raise LLMError("ANTHROPIC_API_KEY tanımlı değil (.env veya Dokploy → Environment)")
         self._anthropic = anthropic
         self.client = anthropic.Anthropic(max_retries=4)
         self.model_name = model or env("LLM_MODEL", DEFAULT_ANTHROPIC_MODEL)

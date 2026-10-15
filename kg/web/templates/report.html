@@ -1,0 +1,6 @@
+{% extends "base.html" %}
+{% block title %}{{ report_name }} — Raporlar{% endblock %}
+{% block content %}
+<p class="small"><a href="/reports">← Raporlar</a> · <span class="muted">{{ report_name }}</span></p>
+<div class="card md">{{ body | md }}</div>
+{% endblock %}

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Kemik–Beyin KG{% endblock %}</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="top"><div class="in">
+  <a class="brand" href="/">Kemik–Beyin KG<small>knowledge graph</small></a>
+  <nav>
+    {% set items = [("/", "Pano"), ("/claims", "İddialar"), ("/hypotheses", "Hipotezler"), ("/ask", "Soru sor"),
+                    ("/spotcheck", "Spot-check"), ("/review", "İnceleme kuyruğu"), ("/reports", "Raporlar"), ("/jobs", "İşler")] %}
+    {% for href, label in items %}
+      <a href="{{ href }}" class="{{ 'on' if (nav == href or (href != '/' and nav.startswith(href))) else '' }}">{{ label }}</a>
+    {% endfor %}
+  </nav>
+  <div class="jobpill">
+    {% if current_job %}⏳ <a href="/jobs/{{ current_job.id }}">{{ current_job.title }}</a> çalışıyor{% endif %}
+  </div>
+</div></header>
+<main>
+{% if error %}<div class="notice bad"><b>Grafa erişilemedi:</b> {{ error }}</div>{% endif %}
+{% block content %}{% endblock %}
+</main>
+{% block scripts %}{% endblock %}
+</body>
+</html>

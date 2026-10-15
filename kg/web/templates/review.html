@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}İnceleme kuyruğu — Kemik–Beyin KG{% endblock %}
+{% block content %}
+<h1>İnceleme kuyruğu</h1>
+<p class="muted">Grafa alınmayan çıkarımlar: öz-doğrulama "unsupported" dedi ya da kaynak cümle metinde birebir geçmiyor.</p>
+<div class="card">
+{% for r in rows %}
+  <div class="claim">
+    <b>{{ r.claim.claim }}</b>
+    <div class="small muted">doi:{{ r.doi }} · {{ r.section }} · {{ r.claim.experiment.figure or "şekil yok" }} · güven {{ r.claim.extraction_confidence }}</div>
+    <blockquote class="small">{{ r.claim.source_sentence }}</blockquote>
+    <div class="small"><span class="badge bad">{{ r.verification }}</span> {{ r.verification_reason }}</div>
+  </div>
+{% else %}
+  <p class="muted">Kuyruk boş.</p>
+{% endfor %}
+</div>
+{% endblock %}

@@ -1,0 +1,9 @@
+# Yerel geliştirme: portları makineye açar.  docker compose -f docker-compose.yml -f docker-compose.local.yml up --build
+services:
+  web:
+    ports:
+      - "8000:8000"
+  neo4j:
+    ports:
+      - "7474:7474"
+      - "7687:7687"
