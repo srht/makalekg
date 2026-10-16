@@ -157,3 +157,23 @@ def test_guide_on_dashboard(client):
     assert client.post("/guide/approve", data={"csrf": "x", "what": "phase1"}).status_code == 403
     # Düğmelerin içine HTML sızmadığını doğrula (eski hata)
     assert "<button <div" not in page and "<button {" not in page
+
+
+def test_templates_are_tracked_by_git():
+    """Şablonlar git'e girmezse dağıtılan imajda eksik kalır (spotcheck.html .gitignore'a takılmıştı)."""
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    if not shutil.which("git") or not (root / ".git").exists():
+        pytest.skip("git yok")
+    tpl_dir = root / "kg" / "web" / "templates"
+    names = {p.name for p in tpl_dir.glob("*.html")}
+    used = set(re.findall(r'"([\w_]+\.html)"', (root / "kg" / "web" / "app.py").read_text()))
+    for t in tpl_dir.glob("*.html"):
+        used |= set(re.findall(r'include "([\w_]+\.html)"', t.read_text()))
+    assert used <= names, f"eksik şablon: {used - names}"
+    ignored = subprocess.run(["git", "check-ignore", *[str(tpl_dir / n) for n in sorted(names)]],
+                             cwd=root, capture_output=True, text=True).stdout.split()
+    assert not ignored, f".gitignore şablonları dışlıyor: {ignored}"

@@ -6,5 +6,5 @@ __pycache__
 .pytest_cache
 data/*
 reports/*
-spotcheck.html
+/spotcheck.html
 tests

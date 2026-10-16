@@ -72,7 +72,7 @@ def seed_doc():
 @pytest.fixture
 def tmp_data(tmp_path, monkeypatch):
     for mod in ("kg.config", "kg.extract", "kg.pipeline", "kg.validate.spotcheck", "kg.validate.consistency",
-                "kg.validate.acceptance", "kg.validate.backtest", "kg.report", "kg.service", "kg.llm", "kg.fetch", "kg.graph", "kg.normalize", "kg.http"):
+                "kg.validate.acceptance", "kg.validate.backtest", "kg.report", "kg.service", "kg.llm", "kg.fetch", "kg.web.guide", "kg.graph", "kg.normalize", "kg.http"):
         m = __import__(mod, fromlist=["x"])
         if hasattr(m, "DATA_DIR"):
             monkeypatch.setattr(m, "DATA_DIR", tmp_path / "data")

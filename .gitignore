@@ -7,4 +7,4 @@ data/*
 !data/.gitkeep
 reports/*
 !reports/.gitkeep
-spotcheck.html
+/spotcheck.html
