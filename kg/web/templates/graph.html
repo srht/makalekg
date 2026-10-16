@@ -9,15 +9,22 @@
 {% if not stats.n_entities %}
 <div class="notice">Henüz grafa giren bir şey yok. <a href="/p/{{ p.slug }}/docs">Belgeler</a> sayfasından dosya yükleyip işle.</div>
 {% else %}
-<p class="lead">Bir düğüme veya oka tıkla: ayrıntısı ve <b>hangi cümleden geldiği</b> sağda görünür. Düğümleri sürükleyebilir, tekerlekle yakınlaşabilirsin.</p>
+<p class="lead">Bir düğüme veya oka tıkla: ayrıntısı ve <b>hangi cümleden geldiği</b> sağda görünür. Bir varlık <b>aradığında</b>
+  (veya düğüme çift tıkladığında) yalnızca o ve yakın çevresi gösterilir.</p>
 
 <div class="graph-tools card">
-  <input type="search" id="q" placeholder="Varlık ara…" list="nodeList">
+  <input type="search" id="q" placeholder="Varlık ara…" list="nodeList" title="Bir varlık seçince yalnızca onun yakın çevresi gösterilir">
+  <select id="depth" title="Kaç adım uzaktaki varlıklar gösterilsin">
+    <option value="1">yalnızca komşular</option><option value="2">2 adıma kadar</option></select>
+  <select id="maxN" title="En fazla kaç varlık gösterilsin">
+    <option value="10">en fazla 10</option><option value="20" selected>en fazla 20</option><option value="50">en fazla 50</option></select>
+  <button type="button" class="secondary small-btn" id="showAll" hidden>Tümünü göster</button>
   <div id="legend" class="legend"></div>
   <label class="check" title="Wikidata'dan eklenen ilişkiler kesikli çizgiyle gösterilir"><input type="checkbox" id="showWd" checked> Wikidata ilişkileri</label>
   <label class="check" title="Arşiv metadatasından (yazar, konu…) gelen ilişkiler noktalı çizgiyle gösterilir"><input type="checkbox" id="showMeta" checked> Arşiv metadata</label>
 </div>
 
+<p id="focusInfo" class="small muted" hidden></p>
 <div class="graph-wrap">
   <div id="net" class="net" aria-label="Knowledge graph"></div>
   <aside id="panel" class="card panel"><p class="muted small">Ayrıntı için bir düğüme veya oka tıkla.</p></aside>
@@ -94,17 +101,61 @@
     if (!data.nodes.some(n => n.type === t)) return;  // bu projede hiç olmayan türleri gösterme
     const b = document.createElement('button'); b.type = 'button'; b.className = 'chip on';
     b.innerHTML = `<i style="background:${c}"></i>${t} <span class="muted">${data.nodes.filter(n => n.type === t).length}</span>`;
-    b.onclick = () => { hidden.has(t) ? hidden.delete(t) : hidden.add(t); b.classList.toggle('on'); applyFilter(); };
+    b.onclick = () => { hidden.has(t) ? hidden.delete(t) : hidden.add(t); b.classList.toggle('on');
+      if (focus) focusOn(focus.id); else applyFilter(); };
     legend.appendChild(b);
   });
   const showWd = document.getElementById('showWd');
+  let focus = null;  // {id, visible: Set} — arama yapılınca yalnızca bu düğümün yakın çevresi görünür
+  const originOk = e => !((e.origin === 'wikidata' && !showWd.checked) || (e.origin === 'metadata' && !showMeta.checked));
   function applyFilter() {
-    nodes.update(data.nodes.map(n => ({id: n.id, hidden: hidden.has(n.type)})));
-    edges.update(data.edges.map(e => ({id: e.id, hidden: (e.origin === 'wikidata' && !showWd.checked) ||
-                                                          (e.origin === 'metadata' && !showMeta.checked)})));
+    nodes.update(data.nodes.map(n => ({id: n.id, hidden: hidden.has(n.type) || (focus !== null && !focus.visible.has(n.id))})));
+    edges.update(data.edges.map(e => ({id: e.id, hidden: !originOk(e) ||
+      (focus !== null && !(focus.visible.has(e.from) && focus.visible.has(e.to)))})));
   }
+  // Odak: seçilen düğümden başlayarak adım adım komşuları ekler; her adımda en çok bağlantılı olanlar önce gelir
+  function computeFocus(id) {
+    const depth = +document.getElementById('depth').value, maxN = +document.getElementById('maxN').value;
+    const adj = {};
+    data.edges.forEach(e => {
+      if (!originOk(e) || hidden.has(byId[e.from]?.type) || hidden.has(byId[e.to]?.type)) return;
+      (adj[e.from] = adj[e.from] || []).push(e.to); (adj[e.to] = adj[e.to] || []).push(e.from);
+    });
+    const visible = new Set([id]); let frontier = [id], total = 0;
+    for (let d = 0; d < depth && visible.size <= maxN; d++) {
+      const cand = [...new Set(frontier.flatMap(n => adj[n] || []))].filter(n => !visible.has(n));
+      cand.sort((a, b) => (degree[b] || 0) - (degree[a] || 0));
+      total += cand.length;
+      const take = cand.slice(0, Math.max(0, maxN - (visible.size - 1)));
+      take.forEach(n => visible.add(n)); frontier = take;
+    }
+    return {id, visible, omitted: Math.max(0, total - (visible.size - 1))};
+  }
+  function relayout(ids) {
+    net.setOptions({physics: {enabled: true}});
+    net.stabilize(150);
+    net.once('stabilized', () => { net.setOptions({physics: false}); net.fit({nodes: ids, maxZoomLevel: 1.4, animation: true}); });
+  }
+  const info = document.getElementById('focusInfo'), showAllBtn = document.getElementById('showAll');
+  function focusOn(id) {
+    focus = computeFocus(id);
+    applyFilter(); relayout([...focus.visible]);
+    net.selectNodes([id]); showNode(id);
+    info.hidden = false; showAllBtn.hidden = false;
+    info.innerHTML = `<b>${esc(byId[id].label)}</b> ve yakın çevresi gösteriliyor: ${focus.visible.size - 1} bağlantılı varlık` +
+      (focus.omitted ? ` (en az bağlantılı ${focus.omitted} tanesi gizlendi; "en fazla" sayısını artırabilirsin)` : '') +
+      '. Başka bir düğüme çift tıklayarak ona geçebilirsin.';
+  }
+  function clearFocus() {
+    if (!focus) return;
+    focus = null; applyFilter(); info.hidden = true; showAllBtn.hidden = true;
+    net.fit({maxZoomLevel: 1.1, animation: true});
+  }
+  showAllBtn.onclick = () => { document.getElementById('q').value = ''; clearFocus(); };
+  ['depth', 'maxN'].forEach(i => document.getElementById(i).onchange = () => { if (focus) focusOn(focus.id); });
   const showMeta = document.getElementById('showMeta');
-  showWd.onchange = applyFilter; showMeta.onchange = applyFilter;
+  const refilter = () => { if (focus) focusOn(focus.id); else applyFilter(); };
+  showWd.onchange = refilter; showMeta.onchange = refilter;
   if (!data.edges.some(e => e.origin === 'metadata')) showMeta.closest('label').hidden = true;
   if (!data.edges.some(e => e.origin === 'wikidata')) showWd.closest('label').hidden = true;
 
@@ -113,9 +164,11 @@
   data.nodes.forEach(n => { const o = document.createElement('option'); o.value = n.label; dl.appendChild(o); });
   const findId = label => (data.nodes.find(n => n.label.toLocaleLowerCase('tr') === label.trim().toLocaleLowerCase('tr')) || {}).id;
   document.getElementById('q').addEventListener('change', e => {
+    if (!e.target.value.trim()) { clearFocus(); return; }
     const id = findId(e.target.value); if (!id) return;
-    net.selectNodes([id]); net.focus(id, {scale: 1.3, animation: true}); showNode(id);
+    focusOn(id);
   });
+  net.on('doubleClick', p => { if (p.nodes.length) { document.getElementById('q').value = byId[p.nodes[0]].label; focusOn(p.nodes[0]); } });
 
   // ayrıntı paneli
   const panel = document.getElementById('panel');
@@ -129,9 +182,11 @@
         `<div><button class="chip" data-qid="${esc(a.qid)}">${esc(a.label)}</button> <span class="muted">${esc(a.description)}</span></div>`).join('')}</details>` : '';
     panel.innerHTML = `<span class="badge" style="border-color:${typeColor[n.type]};color:${typeColor[n.type]}">${esc(n.type)}</span>
       <h3 style="margin-top:6px">${esc(n.label)}</h3>${n.description ? `<p class="small">${esc(n.description)}</p>` : ''}${wd}${alts}
+      <button type="button" class="chip" id="focusBtn">Yalnızca bunun çevresini göster</button>
       <h4>İlişkiler (${rels.length})</h4>${rels.map(e => `<div class="small rel-line"><a href="#" data-edge="${esc(e.id)}">${esc(byId[e.from]?.label)}
         <span class="pred">${esc(e.label)}</span> ${esc(byId[e.to]?.label)}</a>${e.origin === 'wikidata' ? ' <span class="badge hyp">Wikidata</span>' : ''}</div>`).join('') || '<p class="small muted">yok</p>'}
       <h4>Belgelerde geçtiği yerler</h4>${n.mentions.map(m => `<div class="small"><b>${esc(m.doc)}</b>: “${esc(m.text)}”</div>`).join('') || '<p class="small muted">—</p>'}`;
+    document.getElementById('focusBtn').onclick = () => { document.getElementById('q').value = n.label; focusOn(id); };
     const un = document.getElementById('unlink');
     if (un) un.onclick = () => setLink(id, '');
     panel.querySelectorAll('[data-qid]').forEach(b => b.onclick = () => setLink(id, b.dataset.qid));
@@ -161,6 +216,7 @@
     if (!a || !b) { out.textContent = 'İki varlığı da listeden seç.'; return; }
     const r = await (await fetch(`/api/p/${slug}/path?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}&include_wikidata=${showWd.checked}`, {credentials: 'same-origin'})).json();
     if (!r.found) { out.textContent = 'Grafikte bu ikisi arasında bir bağlantı yok.'; return; }
+    clearFocus();
     net.selectEdges(r.edges.map(e => e.id)); net.fit({nodes: [...new Set(r.edges.flatMap(e => [e.from, e.to]))], animation: true});
     out.innerHTML = `<ol>${r.edges.map(e => `<li>${esc(byId[e.from]?.label)} <span class="pred">${esc(e.label)}</span> ${esc(byId[e.to]?.label)}
       <div class="muted">“${esc(e.sources[0]?.sentence)}”</div></li>`).join('')}</ol>`;

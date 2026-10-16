@@ -139,3 +139,4 @@ td input[type=text] { padding: 6px 8px; }
 .rel-line { padding: 3px 0; } .rel-line a { color: var(--fg); text-decoration: none; } .rel-line a:hover { text-decoration: underline; }
 .job-card { max-width: 760px; margin: 20px auto; }
 .row-inline { display: flex; gap: 8px; } .row-inline input { flex: 1; }
+.graph-tools select { width: auto; } .graph-tools input[type=search] { width: 240px; }
