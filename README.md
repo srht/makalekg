@@ -61,6 +61,17 @@ Neo4j Browser'a bakmak isterseniz Dokploy terminalinden `cypher-shell` kullanın
 Soru sor (ajan, düz Türkçe), Spot-check (doğru/kısmen/yanlış işaretleme sunucuya kaydedilir),
 İnceleme kuyruğu, Raporlar, İşler (canlı log). Uzun işler arka planda tek bir kuyrukta sırayla çalışır.
 
+### Sorun giderme: "dependency neo4j failed to start / is unhealthy"
+
+Dokploy'da compose servisinin **Logs** sekmesinden `neo4j` konteynerini seçip son satırlara bakın. Sık sebepler:
+
+- **Şifre 8 karakterden kısa.** Neo4j 5 açılmaz (`Invalid value for password`). `NEO4J_PASSWORD`'ü uzatıp yeniden dağıtın.
+- **Şifreyi ilk kurulumdan sonra değiştirdiniz.** `NEO4J_AUTH` yalnızca veritabanı ilk oluşturulurken uygulanır;
+  sonradan değiştirilen şifre eski birimde geçmez ve web arayüzü "authentication failure" verir. Ya eski şifreye
+  dönün ya da (veri yoksa) Dokploy → Volumes'tan `neo4j_data` birimini silip yeniden dağıtın.
+- **Bellek yetmiyor** (log'da `OutOfMemoryError` ya da konteyner kendiliğinden yeniden başlıyor). Varsayılanlar
+  düşük tutuldu (heap 512M, page cache 256M); sunucu küçükse `NEO4J_HEAP=384M`, büyükse `NEO4J_HEAP=1G` verebilirsiniz.
+
 ### API anahtarı olmadan: kopyala–yapıştır modu
 
 `LLM_BACKEND=manual` ayarlanırsa hiçbir LLM API'si çağrılmaz. Bir iş model yanıtına ihtiyaç duyduğunda

@@ -44,16 +44,19 @@ services:
       - "7474"
     environment:
       NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?NEO4J_PASSWORD tanımlanmalı}
-      NEO4J_server_memory_heap_max__size: ${NEO4J_HEAP:-1G}
-      NEO4J_server_memory_pagecache_size: ${NEO4J_PAGECACHE:-512M}
+      # Küçük sunucular için düşük varsayılanlar; bu projenin graf boyutu için yeterli
+      NEO4J_server_memory_heap_initial__size: ${NEO4J_HEAP:-512M}
+      NEO4J_server_memory_heap_max__size: ${NEO4J_HEAP:-512M}
+      NEO4J_server_memory_pagecache_size: ${NEO4J_PAGECACHE:-256M}
     volumes:
       - neo4j_data:/data
+    # Bolt portu dinlemeye başladı mı? Şifreden bağımsız: şifre değişse veya özel karakter içerse de çalışır.
     healthcheck:
-      test: ["CMD-SHELL", "cypher-shell -u neo4j -p \"$${NEO4J_AUTH#neo4j/}\" 'RETURN 1' >/dev/null 2>&1"]
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/7687"]
       interval: 10s
-      timeout: 10s
-      retries: 20
-      start_period: 30s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
 
 volumes:
   kg_data:
