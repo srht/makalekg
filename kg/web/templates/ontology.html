@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% block title %}Ontoloji — {{ meta.name }}{% endblock %}
+{% block content %}
+<h1>1. Ontoloji</h1>
+<p class="lead">Ontoloji, belgelerde <b>hangi tür şeyleri</b> (varlık türleri) ve <b>aralarındaki hangi ilişkileri</b>
+  arayacağımızı söyler. Sistem yalnızca burada tanımladıklarını çıkarır.</p>
+
+{% if request.query_params.get("saved") %}<div class="notice good">Ontoloji kaydedildi.</div>{% endif %}
+
+{% if suggestion %}
+<section class="card hero">
+  <h2>Önerilen ontoloji hazır</h2>
+  <p class="small muted">Alan: {{ suggestion.domain }}</p>
+  <div class="grid cols-2">
+    <div><h3>Varlık türleri</h3><ul class="small">{% for t in suggestion.entity_types %}<li><b>{{ t.name }}</b> — {{ t.description }}</li>{% endfor %}</ul></div>
+    <div><h3>İlişki türleri</h3><ul class="small">{% for r in suggestion.relation_types %}<li><b>{{ r.name }}</b>
+      <span class="muted">({{ r.source|join(", ") or "her tür" }} → {{ r.target|join(", ") or "her tür" }})</span> — {{ r.description }}</li>{% endfor %}</ul></div>
+  </div>
+  <form method="post" action="/p/{{ p.slug }}/ontology/suggestion" class="actions">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button name="action" value="apply">Bunu kullan (sonra düzenleyebilirim)</button>
+    <button class="secondary" name="action" value="discard">Vazgeç</button>
+  </form>
+</section>
+{% endif %}
+
+{% set empty = not onto.entity_types %}
+<details class="card start" {{ 'open' if empty and not suggestion }}>
+  <summary><b>{{ "Nasıl başlamak istersin?" if empty else "Başka bir yöntemle değiştir veya ekle" }}</b></summary>
+  <div class="grid cols-3" style="margin-top:12px">
+    <form class="card opt" method="post" action="/p/{{ p.slug }}/ontology/template">
+      <h3>A. Hazır şablon</h3>
+      <p class="small muted">En hızlısı. Sonra istediğin gibi düzenlersin.</p>
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <select name="key">{% for k, label in templates_list %}<option value="{{ k }}">{{ label }}</option>{% endfor %}</select>
+      <div class="actions"><button {{ 'class=secondary' if not empty }}>Şablonu yükle</button></div>
+      {% if not empty %}<p class="small warn-text">Mevcut ontolojinin yerine geçer.</p>{% endif %}
+    </form>
+
+    <form class="card opt" method="post" action="/p/{{ p.slug }}/ontology/suggest" enctype="multipart/form-data">
+      <h3>B. Belgeden öner</h3>
+      <p class="small muted">Örnek bir belge ver; model okuyup bu alana uygun bir ontoloji önersin.</p>
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      {% if docs %}
+      <label>Yüklü belgelerden seç</label>
+      <select name="doc_id"><option value="">— seç —</option>{% for d in docs %}<option value="{{ d.id }}">{{ d.filename }}</option>{% endfor %}</select>
+      <label>ya da yeni dosya</label>
+      {% endif %}
+      <input type="file" name="file" accept=".pdf,.docx,.txt,.md,.html">
+      <label>Alanı bir cümleyle anlat <span class="muted">(isteğe bağlı)</span></label>
+      <input type="text" name="hint" placeholder="ör. Orta Doğu'da enerji politikaları">
+      <div class="actions"><button {{ 'disabled' if not llm.ready }}>Öneri iste</button></div>
+    </form>
+
+    <form class="card opt" method="post" action="/p/{{ p.slug }}/ontology/import" enctype="multipart/form-data">
+      <h3>C. Standart ontoloji dosyası</h3>
+      <p class="small muted">OWL, RDF, Turtle (.ttl) veya JSON-LD. Ör. schema.org, FOAF, Dublin Core ya da Protégé'de
+        hazırladığın ontoloji. Dosyadaki sınıflardan istediklerini seçersin.</p>
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="file" name="file" required accept=".ttl,.owl,.rdf,.xml,.jsonld,.json,.nt,.n3">
+      <div class="actions"><button class="secondary">Dosyayı oku</button></div>
+    </form>
+  </div>
+</details>
+
+<form method="post" action="/p/{{ p.slug }}/ontology" id="ontoForm" {{ 'hidden' if empty }}>
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <div class="card">
+    <label for="domain">Alan <span class="muted">(modele bağlam olarak verilir)</span></label>
+    <input id="domain" type="text" name="domain" value="{{ onto.domain }}" placeholder="ör. Uluslararası ilişkiler">
+
+    <h2>Varlık türleri <span class="muted small">— ağdaki düğümler</span></h2>
+    <div class="table-wrap"><table id="entTable">
+      <tr><th style="width:28%">Tür adı</th><th>Açıklama (modele ne aradığını anlatır)</th><th style="width:44px"></th></tr>
+      {% for t in onto.entity_types %}
+      <tr><td><input type="text" name="ent_name" value="{{ t.name }}" required>{% if t.uri %}<a class="small uri" href="{{ t.uri }}" target="_blank" rel="noopener" title="{{ t.uri }}">standart ↗</a>{% endif %}
+              <input type="hidden" name="ent_uri" value="{{ t.uri or '' }}"></td>
+          <td><input type="text" name="ent_desc" value="{{ t.description }}"></td>
+          <td><button type="button" class="icon" data-del title="Sil">×</button></td></tr>
+      {% endfor %}
+    </table></div>
+    <div class="actions"><button type="button" class="secondary" id="addEnt">+ Varlık türü ekle</button></div>
+
+    <h2>İlişki türleri <span class="muted small">— düğümler arasındaki oklar</span></h2>
+    <p class="small muted">"Kimden" ve "kime" alanlarına izin verilen varlık türlerini virgülle yaz; boş bırakırsan her tür olabilir.
+      Tür adına tıklayınca son seçtiğin kutuya eklenir:
+      <span id="typeChips">{% for t in onto.entity_types %}<button type="button" class="chip" data-type="{{ t.name }}">{{ t.name }}</button>{% endfor %}</span></p>
+    <div class="table-wrap"><table id="relTable">
+      <tr><th style="width:20%">İlişki adı</th><th style="width:22%">Kimden</th><th style="width:22%">Kime</th><th>Açıklama</th><th style="width:44px"></th></tr>
+      {% for r in onto.relation_types %}
+      <tr><td><input type="text" name="rel_name" value="{{ r.name }}" required>{% if r.uri %}<a class="small uri" href="{{ r.uri }}" target="_blank" rel="noopener" title="{{ r.uri }}">standart ↗</a>{% endif %}
+              <input type="hidden" name="rel_uri" value="{{ r.uri or '' }}"></td>
+          <td><input type="text" name="rel_source" value="{{ r.source|join(', ') }}" class="typesel"></td>
+          <td><input type="text" name="rel_target" value="{{ r.target|join(', ') }}" class="typesel"></td>
+          <td><input type="text" name="rel_desc" value="{{ r.description }}"></td>
+          <td><button type="button" class="icon" data-del title="Sil">×</button></td></tr>
+      {% endfor %}
+    </table></div>
+    <div class="actions"><button type="button" class="secondary" id="addRel">+ İlişki türü ekle</button></div>
+
+    <div class="actions sticky-save">
+      <button>Kaydet</button>
+      {% if onto.entity_types %}<a class="btn secondary" href="/p/{{ p.slug }}/docs">Sonraki adım: Belgeler →</a>{% endif %}
+    </div>
+  </div>
+</form>
+{% if empty %}<p class="small muted"><a href="#" id="manualStart">Ya da tabloyu kendim doldurmak istiyorum →</a></p>{% endif %}
+
+<details class="card" style="margin-top:20px">
+  <summary><b>Projeyi sil</b></summary>
+  <form method="post" action="/p/{{ p.slug }}/delete" class="actions" style="margin-top:10px">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="text" name="confirm" placeholder="Onay için proje adını yaz: {{ meta.name }}" style="max-width:420px">
+    <button class="secondary">Kalıcı olarak sil</button>
+  </form>
+</details>
+
+<template id="entRow"><tr><td><input type="text" name="ent_name" required placeholder="ör. Kişi"><input type="hidden" name="ent_uri" value=""></td>
+  <td><input type="text" name="ent_desc" placeholder="Bu tür neyi kapsar?"></td><td><button type="button" class="icon" data-del>×</button></td></tr></template>
+<template id="relRow"><tr><td><input type="text" name="rel_name" required placeholder="ör. ÇALIŞIR"><input type="hidden" name="rel_uri" value=""></td>
+  <td><input type="text" name="rel_source" class="typesel" placeholder="her tür"></td><td><input type="text" name="rel_target" class="typesel" placeholder="her tür"></td>
+  <td><input type="text" name="rel_desc"></td><td><button type="button" class="icon" data-del>×</button></td></tr></template>
+{% endblock %}
+{% block scripts %}
+<script>
+(() => {
+  const form = document.getElementById('ontoForm');
+  const add = (tbl, tpl) => { const row = document.getElementById(tpl).content.cloneNode(true); document.getElementById(tbl).appendChild(row);
+    const inputs = document.getElementById(tbl).querySelectorAll('tr:last-child input[type=text]'); if (inputs[0]) inputs[0].focus(); };
+  document.getElementById('addEnt').onclick = () => add('entTable', 'entRow');
+  document.getElementById('addRel').onclick = () => add('relTable', 'relRow');
+  form.addEventListener('click', e => { if (e.target.matches('[data-del]')) e.target.closest('tr').remove(); });
+  let lastSel = null;
+  form.addEventListener('focusin', e => { if (e.target.classList.contains('typesel')) lastSel = e.target; });
+  document.getElementById('typeChips').addEventListener('click', e => {
+    if (!e.target.dataset.type || !lastSel) return;
+    const cur = lastSel.value.split(',').map(s => s.trim()).filter(Boolean);
+    if (!cur.includes(e.target.dataset.type)) cur.push(e.target.dataset.type);
+    lastSel.value = cur.join(', '); lastSel.focus();
+  });
+  const ms = document.getElementById('manualStart');
+  if (ms) ms.onclick = (e) => { e.preventDefault(); form.hidden = false; ms.closest('p').remove();
+    if (!document.querySelector('#entTable input')) { add('entTable', 'entRow'); add('relTable', 'relRow'); } };
+})();
+</script>
+{% endblock %}

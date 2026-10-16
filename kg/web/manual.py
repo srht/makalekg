@@ -14,8 +14,8 @@ from typing import Any, Callable
 
 from ..llm import LLMError
 
-KIND_TR = {"ExtractionResult": "İddia çıkarımı", "VerificationResult": "Öz-doğrulama",
-           "AgentCandidates": "Aday hipotezler", "answer": "Soru yanıtı"}
+KIND_TR = {"ExtractionResult": "Varlık ve ilişki çıkarımı", "SuggestedOntology": "Ontoloji önerisi",
+           "VerificationResult": "Öz-doğrulama", "AgentCandidates": "Aday hipotezler", "answer": "Soru yanıtı"}
 
 
 @dataclass

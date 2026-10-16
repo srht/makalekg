@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block content %}
+{% if not projects %}
+<section class="hero-intro">
+  <h1>Belgelerinden bir bilgi ağı (knowledge graph) kur</h1>
+  <p class="lead">Makale, tez, rapor gibi belgeleri yükle; sistem içlerindeki varlıkları (kişi, kurum, kavram, gen, devlet…)
+    ve aralarındaki ilişkileri senin belirlediğin <b>ontolojiye</b> göre çıkarıp bir ağ olarak gösterir.</p>
+  <ol class="howto">
+    <li><b>Ontoloji:</b> hangi tür şeyleri ve ilişkileri arayacağını seç. Hazır şablon, standart ontoloji dosyası ya da belgeden otomatik öneri.</li>
+    <li><b>Belgeler:</b> PDF, Word veya metin dosyalarını yükle.</li>
+    <li><b>Graf:</b> çıkan ağı incele; her ilişkinin hangi cümleden geldiğini gör, istersen Wikidata ile zenginleştir.</li>
+  </ol>
+</section>
+{% else %}
+<h1>Projeler</h1>
+<div class="grid cols-3">
+  {% for pr in projects %}
+  <a class="card proj" href="/p/{{ pr.slug }}">
+    <b>{{ pr.name }}</b>
+    <span class="small muted">{{ pr.description or "—" }}</span>
+    <span class="small">{{ pr.n_docs }} belge · {{ pr.n_entities }} varlık · {{ pr.n_relations }} ilişki</span>
+  </a>
+  {% endfor %}
+</div>
+<h2>Yeni proje</h2>
+{% endif %}
+<form class="card narrow" method="post" action="/projects">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <label for="name">Proje adı</label>
+  <input id="name" type="text" name="name" required maxlength="80" placeholder="ör. Türk dış politikası 2010–2024">
+  <label for="desc">Kısa açıklama <span class="muted">(isteğe bağlı)</span></label>
+  <input id="desc" type="text" name="description" maxlength="500" placeholder="Bu projede neyi incelemek istiyorsun?">
+  <div class="actions"><button>{{ "Başla" if not projects else "Proje oluştur" }} →</button></div>
+</form>
+<p class="small muted" style="margin-top:20px">Model: {{ llm.label }}</p>
+{% endblock %}

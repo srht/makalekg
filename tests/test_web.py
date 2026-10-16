@@ -1,166 +1,187 @@
-"""Web arayüzü: kimlik doğrulama, CSRF, sayfalar, iş kuyruğu (bellek-içi depo, sahte LLM ile tohumlanmış graf)."""
+"""Web arayüzü: proje → ontoloji → belge → graf akışı (kopyala–yapıştır modu, ağ erişimi yok)."""
 import importlib
+import json
 import re
 import sys
 import time
 
 import pytest
-from conftest import SEED_DOI
 
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
+from test_okg import TEXT, TTL, fake_answer  # noqa: E402
+
 
 @pytest.fixture
-def client(tmp_data, fake_llm, seed_doc, monkeypatch):
-    monkeypatch.setenv("GRAPH_BACKEND", "memory")
+def client(tmp_data, monkeypatch):
     monkeypatch.setenv("APP_PASSWORD", "s3cret-pass")
     monkeypatch.setenv("APP_USERNAME", "admin")
+    monkeypatch.setenv("LLM_BACKEND", "manual")
+    monkeypatch.delenv("NEO4J_URI", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    from kg.graph import MemoryStore
-    from kg.pipeline import Pipeline
-    from kg.schema import Paper
-    from kg import service
-    store = MemoryStore()
-    Pipeline(store, fake_llm, offline=True).ingest(
-        [(Paper(doi=SEED_DOI, year=2026, lab="A"), None)], documents={SEED_DOI: seed_doc})
-    service.spotcheck_build(store, seed=1)
-    service.infer(store)
-    sys.modules.pop("kg.web.app", None)
+    import kg.okg.store as st
     import kg.web.jobs as jobs_mod
+    monkeypatch.setattr(st, "DATA_DIR", tmp_data / "data")
     monkeypatch.setattr(jobs_mod, "DATA_DIR", tmp_data / "data")
+    sys.modules.pop("kg.web.app", None)
     app_mod = importlib.import_module("kg.web.app")
-    monkeypatch.setattr(app_mod, "DATA_DIR", tmp_data / "data")
-    monkeypatch.setattr(app_mod, "REPORTS_DIR", tmp_data / "reports")
     c = TestClient(app_mod.app)
     c.auth = ("admin", "s3cret-pass")
     return c
 
 
-def _csrf(c):
-    return re.search(r'name="csrf" value="([a-f0-9]+)"', c.get("/").text).group(1)
+def _csrf(c, path="/"):
+    return re.search(r'name="csrf" value="([a-f0-9]+)"', c.get(path).text).group(1)
 
 
-def _wait(c, job_id, timeout=10):
+def _wait_pending(c, timeout=10):
+    end = time.time() + timeout
+    while time.time() < end:
+        pid = c.get("/api/manual").json()["pending"]
+        if pid:
+            return pid
+        time.sleep(0.05)
+    raise AssertionError("istem gelmedi")
+
+
+def _wait_job(c, job_id, timeout=10):
     end = time.time() + timeout
     while time.time() < end:
         d = c.get(f"/api/jobs/{job_id}").json()
-        if d["status"] not in ("queued", "running"):
+        if d["status"] not in ("queued", "running", "waiting"):
             return d
-        time.sleep(0.1)
+        time.sleep(0.05)
     raise AssertionError("iş bitmedi")
 
 
-def test_auth_required(client):
+def _new_project(c, name="Dış Politika"):
+    r = c.post("/projects", data={"csrf": _csrf(c), "name": name, "description": "test"}, follow_redirects=False)
+    assert r.status_code == 303
+    return r.headers["location"].split("/")[2]
+
+
+def test_auth(client):
     assert client.get("/healthz", auth=None).status_code == 200
     assert client.get("/", auth=None).status_code == 401
     assert client.get("/", auth=("admin", "yanlis")).status_code == 401
-    assert client.get("/").status_code == 200
-
-
-def test_pages_render(client):
-    for path in ["/", "/claims", "/claims?q=piezo1", "/hypotheses", "/ask", "/spotcheck", "/review", "/reports", "/jobs"]:
-        r = client.get(path)
-        assert r.status_code == 200, path
-    assert "Piezo1" in client.get("/claims").text
-    hyp = re.search(r'href="(/hypotheses/e_[a-f0-9]+)"', client.get("/hypotheses").text).group(1)
-    page = client.get(hyp).text
-    assert "HİPOTEZDİR" in page and "En zayıf halka" in page
-    assert "Alzheimer" in client.get("/review").text  # reddedilen uydurma çıkarım kuyrukta
-    assert client.get("/reports/view/inconsistencies.md").status_code == 200
-    assert client.get("/reports/view/..%2F..%2Fetc%2Fpasswd").status_code == 404
-
-
-def test_csrf_and_jobs(client):
-    assert client.post("/jobs/accept", data={"csrf": "x", "phase": 3}, follow_redirects=False).status_code == 403
-    tok = _csrf(client)
-    r = client.post("/jobs/accept", data={"csrf": tok, "phase": 3}, follow_redirects=False)
-    assert r.status_code == 303
-    d = _wait(client, r.headers["location"].rsplit("/", 1)[1])
-    assert d["status"] == "done" and all(c["passed"] for c in d["result"])
-    # LLM anahtarı yokken soru: iş anlaşılır hatayla başarısız olur, sunucu ayakta kalır
-    r = client.post("/ask", data={"csrf": tok, "question": "Hsp70 ne yapar?"}, follow_redirects=False)
-    d = _wait(client, r.headers["location"].rsplit("/", 1)[1])
-    assert d["status"] == "failed" and "ANTHROPIC_API_KEY" in d["error"]
-
-
-def test_spotcheck_submit(client):
-    tok = _csrf(client)
-    r = client.post("/spotcheck", data={"csrf": tok, "label_0": "correct", "label_1": "correct", "label_2": "correct"},
-                    follow_redirects=False)
-    d = _wait(client, r.headers["location"].rsplit("/", 1)[1])
-    assert d["status"] == "done" and d["result"]["passed"] and d["result"]["n_labeled"] == 3
-    assert "Eşik geçildi" in client.get("/spotcheck").text
-
-
-def test_pdf_upload_validation(client):
-    tok = _csrf(client)
-    r = client.post("/jobs/ingest", data={"csrf": tok, "phase": "1"},
-                    files={"pdf": ("x.pdf", b"not a pdf", "application/pdf")}, follow_redirects=False)
-    assert r.status_code == 400
-
-
-@pytest.fixture
-def manual_client(client, monkeypatch):
-    monkeypatch.setenv("LLM_BACKEND", "manual")
-    return client
-
-
-def test_manual_copy_paste_flow(manual_client):
-    c = manual_client
-    tok = _csrf(c)
-    assert "Kopyala–yapıştır modu açık" in c.get("/").text
-    r = c.post("/ask", data={"csrf": tok, "question": "Hsp70 nöronları korur mu?"}, follow_redirects=False)
-    job_id = r.headers["location"].rsplit("/", 1)[1]
-    end = time.time() + 10
-    while not c.get("/api/manual").json()["pending"]:
-        assert time.time() < end
-        time.sleep(0.05)
-    req_id = c.get("/api/manual").json()["pending"]
-    page = c.get("/manual").text
-    assert "İstemi kopyala" in page and "Hsp70" in page and "GRAF KANITI" in page
-    assert "Yanıtınız bekleniyor" in c.get("/claims").text
-    assert c.get(f"/api/jobs/{job_id}").json()["status"] == "waiting"
-    assert "GRAF KANITI" in c.get(f"/manual/{req_id}/prompt.md").text
-    # boş yanıt reddedilir, istem beklemede kalır
-    c.post(f"/manual/{req_id}", data={"csrf": tok, "answer": "   "})
-    assert c.get("/api/manual").json()["pending"] == req_id
-    assert "kabul edilmedi" in c.get("/manual").text
-    r = c.post(f"/manual/{req_id}", data={"csrf": tok, "answer": "Sadece farede gösterildi (Fig. 3a)."},
-               follow_redirects=False)
-    d = _wait(c, job_id)
-    assert d["status"] == "done" and "farede" in d["result"]["answer"]
-    assert c.get("/api/manual").json()["pending"] is None
-
-
-def test_manual_cancel(manual_client):
-    c = manual_client
-    tok = _csrf(c)
-    r = c.post("/ask", data={"csrf": tok, "question": "Piezo1?"}, follow_redirects=False)
-    job_id = r.headers["location"].rsplit("/", 1)[1]
-    end = time.time() + 10
-    while not c.get("/api/manual").json()["pending"]:
-        assert time.time() < end
-        time.sleep(0.05)
-    req_id = c.get("/api/manual").json()["pending"]
-    c.post(f"/manual/{req_id}/cancel", data={"csrf": tok})
-    d = _wait(c, job_id)
-    assert d["status"] == "failed" and "iptal" in d["error"]
-
-
-def test_guide_on_dashboard(client):
     page = client.get("/").text
-    assert "Sıradaki adım" in page and "Çıkarımları kontrol et" in page  # tohum işlendi → spot-check sırada
-    tok = _csrf(client)
-    r = client.post("/guide/approve", data={"csrf": tok, "what": "phase1"}, follow_redirects=False)
+    assert "Belgelerinden bir bilgi ağı" in page  # ilk açılış: tanıtım + proje oluştur
+
+
+def test_full_flow_manual(client):
+    c = client
+    slug = _new_project(c)
+    assert "Nasıl başlamak istersin?" in c.get(f"/p/{slug}/ontology").text
+    tok = _csrf(c, f"/p/{slug}/ontology")
+    c.post(f"/p/{slug}/ontology/template", data={"csrf": tok, "key": "uluslararasi"})
+    page = c.get(f"/p/{slug}/ontology").text
+    assert "Uluslararası örgüt" in page and "YAPTIRIM_UYGULAR" in page
+    # tablo düzenleme: bir tür ekle
+    onto = json.loads((c.get(f"/p/{slug}/export/json").text))["ontology"]
+    form = {"csrf": tok, "domain": onto["domain"],
+            "ent_name": [t["name"] for t in onto["entity_types"]] + ["Şirket"],
+            "ent_desc": [t["description"] for t in onto["entity_types"]] + ["Enerji şirketleri"],
+            "ent_uri": [""] * (len(onto["entity_types"]) + 1),
+            "rel_name": [r["name"] for r in onto["relation_types"]],
+            "rel_desc": [r["description"] for r in onto["relation_types"]],
+            "rel_source": [", ".join(r["source"]) for r in onto["relation_types"]],
+            "rel_target": [", ".join(r["target"]) for r in onto["relation_types"]],
+            "rel_uri": [""] * len(onto["relation_types"])}
+    c.post(f"/p/{slug}/ontology", data=form)
+    assert "Enerji şirketleri" in c.get(f"/p/{slug}/ontology").text
+
+    # belge yükle + hemen işle → kopyala–yapıştır istemi
+    r = c.post(f"/p/{slug}/docs/upload", data={"csrf": tok, "process": "1"},
+               files=[("files", ("belge.txt", TEXT.encode("utf-8"), "text/plain"))], follow_redirects=False)
     assert r.status_code == 303
-    assert client.post("/guide/approve", data={"csrf": "x", "what": "phase1"}).status_code == 403
-    # Düğmelerin içine HTML sızmadığını doğrula (eski hata)
-    assert "<button <div" not in page and "<button {" not in page
+    pid = _wait_pending(c)
+    manual = c.get("/manual").text
+    assert "Varlık ve ilişki çıkarımı" in manual and "NATO" in manual and "JSON ŞEMASI" in manual
+    assert "Sıra sende" in c.get(f"/p/{slug}/docs").text
+    # önce bozuk yanıt → hata gösterilir, sonra doğru yanıt
+    c.post(f"/manual/{pid}", data={"csrf": tok, "answer": "üzgünüm, yapamam"})
+    assert "kabul edilmedi" in c.get("/manual").text
+    answer = "İşte sonuç:\n```json\n" + json.dumps(fake_answer(), ensure_ascii=False) + "\n```"
+    r = c.post(f"/manual/{pid}", data={"csrf": tok, "answer": answer}, follow_redirects=False)
+    loc = r.headers["location"]
+    if "/jobs/" in loc:
+        assert _wait_job(c, loc.rsplit("/", 1)[1])["status"] == "done"
+    else:
+        assert loc == f"/p/{slug}/docs"  # iş bitti → doğrudan belgelere dönülür
+
+    docs = c.get(f"/p/{slug}/docs").text
+    assert "işlendi" in docs
+    g = c.get(f"/api/p/{slug}/graph").json()
+    assert {n["label"] for n in g["nodes"]} == {"Türkiye", "NATO", "Recep Tayyip Erdoğan"}
+    assert len(g["edges"]) == 2 and g["edges"][0]["sources"][0]["doc"] == "belge.txt"
+    gp = c.get(f"/p/{slug}/graph").text
+    assert "vis-network.min.js" in gp and "Wikidata" in gp
+    assert c.get("/static/vendor/vis-network.min.js").status_code == 200
+    a = next(n["id"] for n in g["nodes"] if n["label"] == "Recep Tayyip Erdoğan")
+    b = next(n["id"] for n in g["nodes"] if n["label"] == "NATO")
+    path = c.get(f"/api/p/{slug}/path", params={"a": a, "b": b}).json()
+    assert path["found"] and len(path["edges"]) == 2
+    doc_id = c.get(f"/api/p/{slug}/status").json()["docs"][0]["id"]
+    detail = c.get(f"/p/{slug}/docs/{doc_id}").text
+    assert "Reddedilenler" in detail and "tür kısıtına uymuyor" in detail
+    # dışa aktarım
+    assert "Türkiye" in c.get(f"/p/{slug}/export/entities.csv").text
+    assert "ÜYESİDİR" in c.get(f"/p/{slug}/export/relations.csv").text
+    ttl = c.get(f"/p/{slug}/export/ttl").text
+    assert "rdfs:label" in ttl and "Türkiye" in ttl
+    # proje anasayfası artık grafa yönlendirir
+    assert c.get(f"/p/{slug}", follow_redirects=False).headers["location"].endswith("/graph")
+
+
+def test_ontology_import_and_suggest(client):
+    c = client
+    slug = _new_project(c, "Genel")
+    tok = _csrf(c, f"/p/{slug}/ontology")
+    r = c.post(f"/p/{slug}/ontology/import", data={"csrf": tok}, files={"file": ("o.ttl", TTL, "text/turtle")},
+               follow_redirects=False)
+    assert r.headers["location"].endswith("/ontology/import")
+    page = c.get(f"/p/{slug}/ontology/import").text
+    assert "Kisi" in page and "worksFor" in page
+    c.post(f"/p/{slug}/ontology/import/apply", data={"csrf": tok, "cls": ["http://example.org/Person", "http://example.org/Organization"],
+                                                     "prop": ["http://example.org/worksFor"]})
+    page = c.get(f"/p/{slug}/ontology").text
+    assert "WORKSFOR" in page and "standart ↗" in page
+    # belgeden öneri (kopyala–yapıştır)
+    r = c.post(f"/p/{slug}/ontology/suggest", data={"csrf": tok, "hint": "dış politika"},
+               files={"file": ("ornek.txt", TEXT.encode(), "text/plain")}, follow_redirects=False)
+    job_id = r.headers["location"].split("/jobs/")[1].split("?")[0]
+    pid = _wait_pending(c)
+    sug = {"domain": "Uİ", "entity_types": [{"name": "Devlet", "description": "ülke"}],
+           "relation_types": [{"name": "komşudur", "description": "", "source": ["Devlet"], "target": ["Devlet"]}]}
+    c.post(f"/manual/{pid}", data={"csrf": tok, "answer": json.dumps(sug)})
+    assert _wait_job(c, job_id)["status"] == "done"
+    page = c.get(f"/p/{slug}/ontology").text
+    assert "Önerilen ontoloji hazır" in page and "KOMŞUDUR" in page
+    c.post(f"/p/{slug}/ontology/suggestion", data={"csrf": tok, "action": "apply"})
+    assert "Önerilen ontoloji hazır" not in c.get(f"/p/{slug}/ontology").text
+
+
+def test_csrf_and_errors(client):
+    c = client
+    slug = _new_project(c, "X")
+    assert c.post(f"/p/{slug}/ontology/template", data={"csrf": "bad", "key": "genel"}).status_code == 403
+    assert c.get("/p/yok-boyle-proje/graph").status_code == 404
+    tok = _csrf(c, f"/p/{slug}/docs")
+    r = c.post(f"/p/{slug}/docs/upload", data={"csrf": tok}, files=[("files", ("a.exe", b"x", "application/octet-stream"))],
+               follow_redirects=True)
+    assert "desteklenmeyen dosya türü" in r.text
+    # ontoloji yokken işleme ontolojiye yönlendirir
+    r = c.post(f"/p/{slug}/docs/process", data={"csrf": tok}, follow_redirects=False)
+    assert r.headers["location"].endswith("/ontology")
+    # proje silme adı ister
+    assert c.post(f"/p/{slug}/delete", data={"csrf": tok, "confirm": "yanlış"}).status_code == 400
+    c.post(f"/p/{slug}/delete", data={"csrf": tok, "confirm": "X"})
+    assert c.get(f"/p/{slug}/graph").status_code == 404
 
 
 def test_templates_are_tracked_by_git():
-    """Şablonlar git'e girmezse dağıtılan imajda eksik kalır (spotcheck.html .gitignore'a takılmıştı)."""
+    """Şablonlar git'e girmezse dağıtılan imajda eksik kalır."""
     import shutil
     import subprocess
     from pathlib import Path
@@ -172,8 +193,8 @@ def test_templates_are_tracked_by_git():
     names = {p.name for p in tpl_dir.glob("*.html")}
     used = set(re.findall(r'"([\w_]+\.html)"', (root / "kg" / "web" / "app.py").read_text()))
     for t in tpl_dir.glob("*.html"):
-        used |= set(re.findall(r'include "([\w_]+\.html)"', t.read_text()))
+        used |= set(re.findall(r'(?:include|extends) "([\w_]+\.html)"', t.read_text()))
     assert used <= names, f"eksik şablon: {used - names}"
-    ignored = subprocess.run(["git", "check-ignore", *[str(tpl_dir / n) for n in sorted(names)]],
-                             cwd=root, capture_output=True, text=True).stdout.split()
-    assert not ignored, f".gitignore şablonları dışlıyor: {ignored}"
+    files = [str(tpl_dir / n) for n in sorted(names)] + [str(root / "kg/web/static/vendor/vis-network.min.js")]
+    ignored = subprocess.run(["git", "check-ignore", *files], cwd=root, capture_output=True, text=True).stdout.split()
+    assert not ignored, f".gitignore dışlıyor: {ignored}"

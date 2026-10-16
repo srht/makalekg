@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Belgeler — {{ meta.name }}{% endblock %}
+{% block content %}
+<h1>2. Belgeler</h1>
+<p class="lead">Makale, tez, rapor… dosyalarını yükle. Sistem her belgeyi okuyup ontolojindeki varlıkları ve ilişkileri çıkarır.</p>
+
+{% if not onto.entity_types %}
+<div class="notice bad">Önce ontolojiyi tanımla: sistem neyi arayacağını bilmeden çıkarım yapamaz.
+  <a href="/p/{{ p.slug }}/ontology">Ontolojiye git →</a></div>
+{% endif %}
+{% if request.query_params.get("err") %}
+<div class="notice bad">{% for e in request.query_params.get("err").split("|") %}<div>{{ e }}</div>{% endfor %}</div>
+{% endif %}
+
+<form class="card upload" method="post" action="/p/{{ p.slug }}/docs/upload" enctype="multipart/form-data">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <label for="files"><b>Dosya seç</b> <span class="muted">({{ supported }}; birden çok seçebilirsin)</span></label>
+  <input id="files" type="file" name="files" multiple required accept=".pdf,.docx,.txt,.md,.html,.htm">
+  <label class="check"><input type="checkbox" name="process" value="1" {{ 'checked' if onto.entity_types else 'disabled' }}>
+    Yükledikten sonra hemen işle</label>
+  {% if llm.manual %}<p class="small muted">Kopyala–yapıştır modundasın: her belge için genelde 1 kez istem kopyalayıp yanıt yapıştırman gerekir.</p>{% endif %}
+  <div class="actions"><button>Yükle</button></div>
+</form>
+
+{% if docs %}
+<div class="row-between" style="margin-top:22px">
+  <h2 style="margin:0">Yüklenen belgeler</h2>
+  <div class="actions" style="margin:0">
+    {% set pending = docs | selectattr("status", "in", ["new", "error"]) | list %}
+    {% if pending and onto.entity_types %}
+    <form class="inline" method="post" action="/p/{{ p.slug }}/docs/process">
+      <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="which" value="new">
+      <button>Bekleyen {{ pending|length }} belgeyi işle</button></form>
+    {% endif %}
+    {% if stats.n_entities %}<a class="btn secondary" href="/p/{{ p.slug }}/graph">Grafı gör →</a>{% endif %}
+  </div>
+</div>
+<div class="table-wrap" style="margin-top:10px"><table id="docTable">
+  <tr><th>Belge</th><th>Durum</th><th class="num">Varlık</th><th class="num">İlişki</th><th class="num">Reddedilen</th><th></th></tr>
+  {% for d in docs %}
+  <tr data-id="{{ d.id }}">
+    <td><a href="/p/{{ p.slug }}/docs/{{ d.id }}">{{ d.filename }}</a><div class="small muted">{{ "{:,}".format(d.chars) }} karakter</div></td>
+    <td class="st">{% include "_docstatus.html" %}</td>
+    <td class="num">{{ d.n_entities if d.status == "done" else "—" }}</td>
+    <td class="num">{{ d.n_relations if d.status == "done" else "—" }}</td>
+    <td class="num">{% if d.status == "done" and d.n_rejected %}<a href="/p/{{ p.slug }}/docs/{{ d.id }}#rejected">{{ d.n_rejected }}</a>{% elif d.status == "done" %}0{% else %}—{% endif %}</td>
+    <td class="row-actions">
+      {% if onto.entity_types and d.status not in ("queued", "processing") %}
+      <form class="inline" method="post" action="/p/{{ p.slug }}/docs/process"><input type="hidden" name="csrf" value="{{ csrf }}">
+        <input type="hidden" name="doc_id" value="{{ d.id }}"><button class="secondary small-btn">{{ "Yeniden işle" if d.status == "done" else "İşle" }}</button></form>
+      {% endif %}
+      <form class="inline" method="post" action="/p/{{ p.slug }}/docs/{{ d.id }}/delete" onsubmit="return confirm('Bu belge ve ondan çıkarılan bilgiler silinsin mi?')">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><button class="icon" title="Sil">×</button></form>
+    </td>
+  </tr>
+  {% endfor %}
+</table></div>
+<p class="small muted">"Reddedilen": model bir şey önerdi ama belgede doğrulanamadı (ör. kaynak cümle metinde yok) — grafa alınmadı.
+  Ontolojiyi değiştirirsen belgeleri yeniden işleyebilirsin.</p>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+<script>
+(() => {
+  const active = {{ ((docs | selectattr("status", "in", ["queued", "processing"]) | list | length) > 0 or current_job is not none) | tojson }};
+  if (!active) return;
+  let last = null;
+  async function poll() {
+    try {
+      const d = await (await fetch('/api/p/{{ p.slug }}/status', {credentials: 'same-origin'})).json();
+      const sig = JSON.stringify(d.docs.map(x => [x.id, x.status])) + d.manual_pending;
+      if (last !== null && sig !== last) { location.reload(); return; }
+      last = sig;
+      if (!d.busy && !d.docs.some(x => x.status === 'queued' || x.status === 'processing')) { location.reload(); return; }
+    } catch (e) {}
+    setTimeout(poll, 2500);
+  }
+  setTimeout(poll, 2000);
+})();
+</script>
+{% endblock %}

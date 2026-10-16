@@ -3,29 +3,36 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{% block title %}Kemik–Beyin KG{% endblock %}</title>
+<title>{% block title %}Knowledge Graph Kurucu{% endblock %}</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <header class="top"><div class="in">
-  <a class="brand" href="/">Kemik–Beyin KG<small>knowledge graph</small></a>
-  <nav>
-    {% set items = [("/", "Pano"), ("/claims", "İddialar"), ("/hypotheses", "Hipotezler"), ("/ask", "Soru sor"),
-                    ("/spotcheck", "Spot-check"), ("/manual", "Elle yanıt"), ("/review", "İnceleme kuyruğu"), ("/reports", "Raporlar"), ("/jobs", "İşler")] %}
-    {% for href, label in items %}
-      <a href="{{ href }}" class="{{ 'on' if (nav == href or (href != '/' and nav.startswith(href))) else '' }}">{{ label }}</a>
-    {% endfor %}
-  </nav>
+  <a class="brand" href="/">Knowledge Graph Kurucu</a>
+  {% if p is defined %}<span class="crumb">/ <a href="/p/{{ p.slug }}">{{ meta.name }}</a></span>{% endif %}
   <div class="jobpill">
-    {% if current_job %}⏳ <a href="/jobs/{{ current_job.id }}">{{ current_job.title }}</a>
-      {% if current_job.status == "waiting" %}<a href="/manual">yanıtınızı bekliyor</a>{% else %}çalışıyor{% endif %}{% endif %}
+    {% if current_job %}<a href="/jobs/{{ current_job.id }}">⏳ {{ current_job.title }}{% if current_job.status == "waiting" %} — sıra sende{% endif %}</a>{% endif %}
   </div>
 </div></header>
 <main>
-{% if manual_pending and nav != "/manual" %}<div class="notice hyp"><b>Yanıtınız bekleniyor:</b> {{ manual_pending.kind_tr }}
-  (adım {{ manual_pending.seq }}{% if manual_pending.job_title %} · {{ manual_pending.job_title }}{% endif %}).
-  <a href="/manual">İstemi kopyala ve yanıtı yapıştır →</a></div>{% endif %}
-{% if error %}<div class="notice bad"><b>Grafa erişilemedi:</b> {{ error }}</div>{% endif %}
+{% if manual_pending and path != "/manual" %}
+<div class="notice hyp"><b>Sıra sende:</b> bir iş modelin yanıtını bekliyor.
+  <a class="btn small-btn" href="/manual">İstemi kopyala, yanıtı yapıştır →</a></div>
+{% endif %}
+{% if not llm.ready %}
+<div class="notice bad"><b>Dil modeli ayarlı değil.</b> Belgelerden bilgi çıkarmak için Dokploy → Environment'a şunlardan birini ekleyip yeniden dağıt:
+  <code>LLM_BACKEND=manual</code> (API'siz, kopyala–yapıştır) veya <code>ANTHROPIC_API_KEY=...</code></div>
+{% endif %}
+{% if p is defined %}
+<div class="steps-bar">
+  {% set items = [("ontology", "1", "Ontoloji", "Neyi çıkaracağımı tanımla"), ("docs", "2", "Belgeler", "Dosyaları yükle ve işle"), ("graph", "3", "Graf", "Sonucu incele")] %}
+  {% for key, n, title, sub in items %}
+  <a href="/p/{{ p.slug }}/{{ key }}" class="sb {{ 'on' if step == key else '' }} {{ 'done' if steps_done[key] else '' }}">
+    <span class="n">{% if steps_done[key] %}✓{% else %}{{ n }}{% endif %}</span>
+    <span><b>{{ title }}</b><small>{{ sub }}</small></span></a>
+  {% endfor %}
+</div>
+{% endif %}
 {% block content %}{% endblock %}
 </main>
 {% block scripts %}{% endblock %}

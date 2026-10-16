@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}{{ doc.filename }} — {{ meta.name }}{% endblock %}
+{% block content %}
+<p class="small"><a href="/p/{{ p.slug }}/docs">← Belgeler</a></p>
+<h1>{{ doc.filename }}</h1>
+<p class="small muted">{{ "{:,}".format(doc.chars) }} karakter · {% set d = doc %}{% include "_docstatus.html" %}</p>
+
+<h2>Varlıklar ({{ ents|length }})</h2>
+{% if ents %}
+<div class="table-wrap"><table>
+  <tr><th>Ad</th><th>Tür</th><th>Belgede geçtiği biçim</th></tr>
+  {% for e in ents %}
+  <tr><td><b>{{ e.name }}</b>{% if e.description %}<div class="small muted">{{ e.description }}</div>{% endif %}</td><td>{{ e.type }}</td>
+      <td class="small">{{ e.mentions | selectattr("doc_id", "equalto", doc.id) | map(attribute="text") | unique | join(" · ") }}</td></tr>
+  {% endfor %}
+</table></div>
+{% else %}<p class="muted">Henüz yok.</p>{% endif %}
+
+<h2>İlişkiler ({{ rels|length }})</h2>
+{% if rels %}
+<div class="card">
+{% for r in rels %}
+  <div class="rel"><b>{{ r.s }}</b> <span class="pred">{{ r.p }}</span> <b>{{ r.o }}</b>
+    <blockquote class="small">{{ r.sentence }}</blockquote></div>
+{% endfor %}
+</div>
+{% else %}<p class="muted">Henüz yok.</p>{% endif %}
+
+<h2 id="rejected">Reddedilenler ({{ rejected|length }})</h2>
+<p class="small muted">Model bunları önerdi ama belgede doğrulanamadığı için grafa alınmadı.</p>
+{% if rejected %}
+<div class="table-wrap"><table>
+  <tr><th>Öneri</th><th>Sebep</th><th>Metin</th></tr>
+  {% for x in rejected %}<tr><td>{{ x.kind }}: {{ x.item }}</td><td><span class="badge bad">{{ x.reason }}</span></td><td class="small">{{ x.text }}</td></tr>{% endfor %}
+</table></div>
+{% endif %}
+{% endblock %}

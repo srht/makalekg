@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% block title %}Graf — {{ meta.name }}{% endblock %}
+{% block content %}
+<div class="row-between">
+  <h1>3. Graf</h1>
+  <span class="small muted">{{ stats.n_entities }} varlık · {{ stats.n_relations }} ilişki · {{ stats.n_done }} belgeden</span>
+</div>
+
+{% if not stats.n_entities %}
+<div class="notice">Henüz grafa giren bir şey yok. <a href="/p/{{ p.slug }}/docs">Belgeler</a> sayfasından dosya yükleyip işle.</div>
+{% else %}
+<p class="lead">Bir düğüme veya oka tıkla: ayrıntısı ve <b>hangi cümleden geldiği</b> sağda görünür. Düğümleri sürükleyebilir, tekerlekle yakınlaşabilirsin.</p>
+
+<div class="graph-tools card">
+  <input type="search" id="q" placeholder="Varlık ara…" list="nodeList">
+  <div id="legend" class="legend"></div>
+  <label class="check" title="Wikidata'dan eklenen ilişkiler kesikli çizgiyle gösterilir"><input type="checkbox" id="showWd" checked> Wikidata ilişkileri</label>
+</div>
+
+<div class="graph-wrap">
+  <div id="net" class="net" aria-label="Knowledge graph"></div>
+  <aside id="panel" class="card panel"><p class="muted small">Ayrıntı için bir düğüme veya oka tıkla.</p></aside>
+</div>
+
+<div class="grid cols-2" style="margin-top:16px">
+  <div class="card">
+    <h3>Bu ikisi nasıl bağlantılı?</h3>
+    <p class="small muted">İki varlık seç; aradaki en kısa ilişki zinciri grafikte vurgulanır.</p>
+    <div class="grid cols-2"><input type="text" id="pa" list="nodeList" placeholder="Birinci varlık"><input type="text" id="pb" list="nodeList" placeholder="İkinci varlık"></div>
+    <div class="actions"><button type="button" id="pathBtn" class="secondary">Bağlantıyı bul</button></div>
+    <div id="pathOut" class="small"></div>
+  </div>
+  <div class="card">
+    <h3>Açık knowledge graph: Wikidata</h3>
+    <p class="small muted">Varlıklarını Wikidata kayıtlarıyla eşle; sonra eşlenen varlıklar arasında Wikidata'nın bildiği ilişkileri
+      ekle (ör. bir ülkenin bir örgüte üyeliği). Bunlar belgelerden değil Wikidata'dan gelir ve kesikli çizgiyle ayrı gösterilir.</p>
+    <p class="small">{{ n_linked }} / {{ stats.n_entities }} varlık eşlendi · {{ n_wd_rel }} Wikidata ilişkisi</p>
+    <div class="actions">
+      <form class="inline" method="post" action="/p/{{ p.slug }}/wikidata/link"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="secondary">1. Varlıkları eşle</button></form>
+      <form class="inline" method="post" action="/p/{{ p.slug }}/wikidata/enrich"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="secondary" {{ 'disabled' if not n_linked }}>2. Wikidata ilişkilerini ekle</button></form>
+      {% if n_wd_rel %}<form class="inline" method="post" action="/p/{{ p.slug }}/wikidata/clear"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="icon" title="Wikidata ilişkilerini kaldır">×</button></form>{% endif %}
+    </div>
+  </div>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <h3>Dışa aktar</h3>
+  <div class="actions">
+    <a class="btn secondary" href="/p/{{ p.slug }}/export/entities.csv">Varlıklar (CSV / Excel)</a>
+    <a class="btn secondary" href="/p/{{ p.slug }}/export/relations.csv">İlişkiler (CSV / Excel)</a>
+    <a class="btn secondary" href="/p/{{ p.slug }}/export/ttl">RDF / Turtle (standart ontoloji URI'leriyle)</a>
+    <a class="btn secondary" href="/p/{{ p.slug }}/export/json">JSON</a>
+  </div>
+  <p class="small muted">Neo4j ayarlıysa graf her işlemden sonra oraya da yazılır (düğümlerde <code>project: "{{ p.slug }}"</code>).</p>
+</div>
+<datalist id="nodeList"></datalist>
+{% endif %}
+{% endblock %}
+{% block scripts %}
+{% if stats.n_entities %}
+<script src="/static/vendor/vis-network.min.js"></script>
+<script>
+(async () => {
+  const slug = {{ p.slug | tojson }}, csrf = {{ csrf | tojson }};
+  const data = await (await fetch(`/api/p/${slug}/graph`, {credentials: 'same-origin'})).json();
+  const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+  const palette = ['#2f6fb3', '#c0582b', '#2f8a5b', '#8a4fb0', '#b08a1f', '#c23d6b', '#1f8a8a', '#6b7a2f', '#5b5bd6', '#8a5a3c'];
+  const typeColor = {}; data.types.forEach((t, i) => typeColor[t] = palette[i % palette.length]);
+  data.nodes.forEach(n => { if (!(n.type in typeColor)) typeColor[n.type] = palette[Object.keys(typeColor).length % palette.length]; });
+  const fg = dark ? '#ebe9e2' : '#1c1c1a', edgeCol = dark ? '#7d7b74' : '#9a988f';
+  const degree = {}; data.edges.forEach(e => { degree[e.from] = (degree[e.from] || 0) + 1; degree[e.to] = (degree[e.to] || 0) + 1; });
+  const byId = Object.fromEntries(data.nodes.map(n => [n.id, n]));
+  const nodes = new vis.DataSet(data.nodes.map(n => ({id: n.id, label: n.label, group: n.type, title: `${n.label} (${n.type})`,
+    value: 1 + (degree[n.id] || 0), color: {background: typeColor[n.type], border: typeColor[n.type], highlight: {background: typeColor[n.type], border: fg}},
+    font: {color: fg, size: 13}})));
+  const edgeItem = e => ({id: e.id, from: e.from, to: e.to, label: e.label, arrows: 'to', dashes: e.origin === 'wikidata',
+    color: {color: e.origin === 'wikidata' ? (dark ? '#8f86c9' : '#7a6fc0') : edgeCol, highlight: fg},
+    font: {size: 10, color: dark ? '#a3a199' : '#67665f', strokeWidth: 3, strokeColor: dark ? '#1d1d1b' : '#ffffff', align: 'middle'}});
+  const edges = new vis.DataSet(data.edges.map(edgeItem));
+  const net = new vis.Network(document.getElementById('net'), {nodes, edges}, {
+    nodes: {shape: 'dot', scaling: {min: 8, max: 30}},
+    edges: {smooth: {type: 'continuous'}, width: 1.2},
+    physics: {stabilization: {iterations: 250}, barnesHut: {gravitationalConstant: -6000, springLength: 140}},
+    interaction: {hover: true, tooltipDelay: 150}});
+  net.once('stabilizationIterationsDone', () => { net.setOptions({physics: false}); net.fit({maxZoomLevel: 1.1}); });
+
+  // lejant + tür filtresi
+  const hidden = new Set();
+  const legend = document.getElementById('legend');
+  Object.entries(typeColor).forEach(([t, c]) => {
+    if (!data.nodes.some(n => n.type === t)) return;  // bu projede hiç olmayan türleri gösterme
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'chip on';
+    b.innerHTML = `<i style="background:${c}"></i>${t} <span class="muted">${data.nodes.filter(n => n.type === t).length}</span>`;
+    b.onclick = () => { hidden.has(t) ? hidden.delete(t) : hidden.add(t); b.classList.toggle('on'); applyFilter(); };
+    legend.appendChild(b);
+  });
+  const showWd = document.getElementById('showWd');
+  function applyFilter() {
+    nodes.update(data.nodes.map(n => ({id: n.id, hidden: hidden.has(n.type)})));
+    edges.update(data.edges.map(e => ({id: e.id, hidden: (e.origin === 'wikidata' && !showWd.checked)})));
+  }
+  showWd.onchange = applyFilter;
+  if (!data.edges.some(e => e.origin === 'wikidata')) showWd.closest('label').hidden = true;
+
+  // arama
+  const dl = document.getElementById('nodeList');
+  data.nodes.forEach(n => { const o = document.createElement('option'); o.value = n.label; dl.appendChild(o); });
+  const findId = label => (data.nodes.find(n => n.label.toLocaleLowerCase('tr') === label.trim().toLocaleLowerCase('tr')) || {}).id;
+  document.getElementById('q').addEventListener('change', e => {
+    const id = findId(e.target.value); if (!id) return;
+    net.selectNodes([id]); net.focus(id, {scale: 1.3, animation: true}); showNode(id);
+  });
+
+  // ayrıntı paneli
+  const panel = document.getElementById('panel');
+  const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+  function showNode(id) {
+    const n = byId[id]; if (!n) return;
+    const rels = data.edges.filter(e => e.from === id || e.to === id);
+    const wd = n.wikidata ? `<p class="small">Wikidata: <a href="${esc(n.wikidata.url)}" target="_blank" rel="noopener">${esc(n.wikidata.label)} (${esc(n.wikidata.qid)})</a>
+        <span class="muted">${esc(n.wikidata.description)}</span> <button class="icon" id="unlink" title="Eşleme yanlış">×</button></p>` : '';
+    const alts = (n.wikidata && n.alternatives.length) ? `<details class="small"><summary>Başka Wikidata adayı</summary>${n.alternatives.map(a =>
+        `<div><button class="chip" data-qid="${esc(a.qid)}">${esc(a.label)}</button> <span class="muted">${esc(a.description)}</span></div>`).join('')}</details>` : '';
+    panel.innerHTML = `<span class="badge" style="border-color:${typeColor[n.type]};color:${typeColor[n.type]}">${esc(n.type)}</span>
+      <h3 style="margin-top:6px">${esc(n.label)}</h3>${n.description ? `<p class="small">${esc(n.description)}</p>` : ''}${wd}${alts}
+      <h4>İlişkiler (${rels.length})</h4>${rels.map(e => `<div class="small rel-line"><a href="#" data-edge="${esc(e.id)}">${esc(byId[e.from]?.label)}
+        <span class="pred">${esc(e.label)}</span> ${esc(byId[e.to]?.label)}</a>${e.origin === 'wikidata' ? ' <span class="badge hyp">Wikidata</span>' : ''}</div>`).join('') || '<p class="small muted">yok</p>'}
+      <h4>Belgelerde geçtiği yerler</h4>${n.mentions.map(m => `<div class="small"><b>${esc(m.doc)}</b>: “${esc(m.text)}”</div>`).join('') || '<p class="small muted">—</p>'}`;
+    const un = document.getElementById('unlink');
+    if (un) un.onclick = () => setLink(id, '');
+    panel.querySelectorAll('[data-qid]').forEach(b => b.onclick = () => setLink(id, b.dataset.qid));
+    panel.querySelectorAll('[data-edge]').forEach(a => a.onclick = ev => { ev.preventDefault(); net.selectEdges([a.dataset.edge]); showEdge(a.dataset.edge); });
+  }
+  function showEdge(id) {
+    const e = data.edges.find(x => x.id === id); if (!e) return;
+    panel.innerHTML = `<span class="badge ${e.origin === 'wikidata' ? 'hyp' : ''}">${e.origin === 'wikidata' ? 'Wikidata' : 'Belgeden'}</span>
+      <h3 style="margin-top:6px"><a href="#" data-node="${esc(e.from)}">${esc(byId[e.from]?.label)}</a> <span class="pred">${esc(e.label)}</span>
+        <a href="#" data-node="${esc(e.to)}">${esc(byId[e.to]?.label)}</a></h3>
+      <h4>Kaynak (${e.sources.length})</h4>${e.sources.map(s => `<div class="small"><b>${esc(s.doc)}</b>
+        <blockquote>${esc(s.sentence)}</blockquote></div>`).join('')}`;
+    panel.querySelectorAll('[data-node]').forEach(a => a.onclick = ev => { ev.preventDefault(); net.selectNodes([a.dataset.node]); showNode(a.dataset.node); });
+  }
+  async function setLink(id, qid) {
+    const body = new URLSearchParams({csrf, key: id, qid});
+    await fetch(`/p/${slug}/entity/link`, {method: 'POST', body, credentials: 'same-origin'});
+    location.reload();
+  }
+  net.on('click', p => { if (p.nodes.length) showNode(p.nodes[0]); else if (p.edges.length) showEdge(p.edges[0]); });
+
+  // bağlantı bul
+  document.getElementById('pathBtn').onclick = async () => {
+    const a = findId(document.getElementById('pa').value), b = findId(document.getElementById('pb').value);
+    const out = document.getElementById('pathOut');
+    if (!a || !b) { out.textContent = 'İki varlığı da listeden seç.'; return; }
+    const r = await (await fetch(`/api/p/${slug}/path?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}&include_wikidata=${showWd.checked}`, {credentials: 'same-origin'})).json();
+    if (!r.found) { out.textContent = 'Grafikte bu ikisi arasında bir bağlantı yok.'; return; }
+    net.selectEdges(r.edges.map(e => e.id)); net.fit({nodes: [...new Set(r.edges.flatMap(e => [e.from, e.to]))], animation: true});
+    out.innerHTML = `<ol>${r.edges.map(e => `<li>${esc(byId[e.from]?.label)} <span class="pred">${esc(e.label)}</span> ${esc(byId[e.to]?.label)}
+      <div class="muted">“${esc(e.sources[0]?.sentence)}”</div></li>`).join('')}</ol>`;
+  };
+})();
+</script>
+{% endif %}
+{% endblock %}

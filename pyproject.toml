@@ -1,7 +1,7 @@
 [project]
 name = "kg-bone-brain"
 version = "0.1.0"
-description = "Kemik–beyin ekseni literatüründen iddia merkezli knowledge graph ve otonom hipotez üretimi"
+description = "Belgelerden ontoloji tabanlı knowledge graph kurucu (web) + kemik–beyin ekseni örnek boru hattı (CLI)"
 requires-python = ">=3.11"
 dependencies = [
   "pydantic>=2.6",
@@ -12,6 +12,7 @@ dependencies = [
   "neo4j>=5.20",
   "anthropic>=1.0",
   "rapidfuzz>=3.0",
+  "rdflib>=7.0",
 ]
 
 [project.optional-dependencies]
@@ -28,10 +29,10 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 py-modules = ["cli"]
-packages = ["kg", "kg.infer", "kg.validate", "kg.web"]
+packages = ["kg", "kg.infer", "kg.validate", "kg.web", "kg.okg"]
 
 [tool.setuptools.package-data]
-"kg.web" = ["templates/*.html", "static/*"]
+"kg.web" = ["templates/*.html", "static/*", "static/vendor/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

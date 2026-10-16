@@ -1,11 +1,7 @@
 {% extends "base.html" %}
-{% block title %}Elle yanıt — Kemik–Beyin KG{% endblock %}
+{% block title %}Elle yanıt{% endblock %}
 {% block content %}
 <h1>Elle yanıt (kopyala–yapıştır)</h1>
-{% if not cfg.manual %}
-<div class="notice">Şu an LLM arka ucu <b>{{ cfg.llm_backend }}</b>. Kopyala–yapıştır modunu kullanmak için
-ortam değişkenlerinde <code>LLM_BACKEND=manual</code> ayarlayıp yeniden dağıtın.</div>
-{% endif %}
 
 {% if req %}
 <div class="card">
@@ -53,10 +49,8 @@ ortam değişkenlerinde <code>LLM_BACKEND=manual</code> ayarlayıp yeniden dağ�
 {% else %}
 <div class="card">
   <p>Bekleyen istem yok.</p>
-  <p class="small muted">Panodan bir iş başlattığınızda (Faz 1, Faz 2, soru sor…) ve iş bir model yanıtına ihtiyaç duyduğunda
-  istem burada belirir. Bu sayfa açık kalırsa kendiliğinden yenilenir.</p>
-  <p class="small muted">Makale başına genelde 2 adım vardır: <b>iddia çıkarımı</b> (tüm metin tek istemde) ve
-  <b>öz-doğrulama</b>. Verilen yanıtlar saklanır; aynı istem tekrar sorulmaz.</p>
+  <p class="small muted">Bir belgeyi işlediğinde veya ontoloji önerisi istediğinde, iş modelin yanıtına ihtiyaç duyunca
+  istem burada belirir. Bu sayfa açık kalırsa kendiliğinden yenilenir. Verilen yanıtlar saklanır; aynı istem tekrar sorulmaz.</p>
 </div>
 {% endif %}
 {% endblock %}

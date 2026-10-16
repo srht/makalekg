@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Ontoloji içe aktar — {{ meta.name }}{% endblock %}
+{% block content %}
+<p class="small"><a href="/p/{{ p.slug }}/ontology">← Ontoloji</a></p>
+<h1>Standart ontolojiden seç</h1>
+<p class="lead"><b>{{ parsed.filename }}</b> dosyasında {{ parsed.classes|length }} sınıf ve {{ parsed.properties|length }} ilişki bulundu.
+  Projende kullanmak istediklerini işaretle. Az ve odaklı seçmek daha iyi sonuç verir (genelde 5–15 tür).</p>
+<form method="post" action="/p/{{ p.slug }}/ontology/import/apply">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <input type="search" id="flt" placeholder="Ara…" style="max-width:360px;margin-bottom:10px">
+  <div class="grid cols-2">
+    <div class="card"><h3>Varlık türleri (sınıflar)</h3>
+      <p class="small muted">Çok ilişkisi olan sınıflar üstte.</p>
+      <div class="picklist">
+      {% for c in parsed.classes %}
+        <label class="check pick"><input type="checkbox" name="cls" value="{{ c.uri }}">
+          <span><b>{{ c.name }}</b> <span class="muted small">{{ c.description[:140] }}</span></span></label>
+      {% endfor %}
+      </div></div>
+    <div class="card"><h3>İlişki türleri (özellikler)</h3>
+      <p class="small muted">Yalnızca iki varlığı bağlayan özellikler listelenir.</p>
+      <div class="picklist">
+      {% for pr in parsed.properties %}
+        <label class="check pick"><input type="checkbox" name="prop" value="{{ pr.uri }}">
+          <span><b>{{ pr.name }}</b> <span class="muted small">{{ pr.description[:140] }}</span></span></label>
+      {% endfor %}
+      </div></div>
+  </div>
+  <div class="actions sticky-save"><button>Seçilenleri ontolojiye ekle</button>
+    <a class="btn secondary" href="/p/{{ p.slug }}/ontology">Vazgeç</a></div>
+</form>
+{% endblock %}
+{% block scripts %}
+<script>
+document.getElementById('flt').addEventListener('input', e => {
+  const q = e.target.value.toLocaleLowerCase('tr');
+  document.querySelectorAll('.pick').forEach(l => { l.hidden = q && !l.textContent.toLocaleLowerCase('tr').includes(q); });
+});
+</script>
+{% endblock %}

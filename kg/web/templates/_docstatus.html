@@ -1,0 +1,5 @@
+{% if d.status == "done" %}<span class="badge good">işlendi</span>
+{% elif d.status == "processing" %}<span class="badge warn">işleniyor…</span>{% if manual_pending %} <a class="small" href="/manual">sıra sende →</a>{% endif %}
+{% elif d.status == "queued" %}<span class="badge">sırada</span>
+{% elif d.status == "error" %}<span class="badge bad">hata</span><div class="small bad-text">{{ d.error }}</div>
+{% else %}<span class="badge">bekliyor</span>{% endif %}
