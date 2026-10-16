@@ -24,6 +24,7 @@
 <h2>Log</h2>
 <pre class="log" id="log">{{ job.log | join("\n") }}</pre>
 <div class="actions">
+  {% if job.status in ("done", "failed", "interrupted") %}<a class="btn" href="/">Sıradaki adıma dön →</a>{% endif %}
   {% if job.kind in ("ingest", "spotcheck") %}<a class="btn secondary" href="/spotcheck">Spot-check'e git</a>{% endif %}
   {% if job.kind == "infer" %}<a class="btn secondary" href="/hypotheses">Hipotezlere git</a>{% endif %}
   {% if job.kind in ("ingest", "infer", "backtest", "accept") %}<a class="btn secondary" href="/reports">Raporlar</a>{% endif %}

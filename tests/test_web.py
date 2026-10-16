@@ -146,3 +146,14 @@ def test_manual_cancel(manual_client):
     c.post(f"/manual/{req_id}/cancel", data={"csrf": tok})
     d = _wait(c, job_id)
     assert d["status"] == "failed" and "iptal" in d["error"]
+
+
+def test_guide_on_dashboard(client):
+    page = client.get("/").text
+    assert "Sıradaki adım" in page and "Çıkarımları kontrol et" in page  # tohum işlendi → spot-check sırada
+    tok = _csrf(client)
+    r = client.post("/guide/approve", data={"csrf": tok, "what": "phase1"}, follow_redirects=False)
+    assert r.status_code == 303
+    assert client.post("/guide/approve", data={"csrf": "x", "what": "phase1"}).status_code == 403
+    # Düğmelerin içine HTML sızmadığını doğrula (eski hata)
+    assert "<button <div" not in page and "<button {" not in page

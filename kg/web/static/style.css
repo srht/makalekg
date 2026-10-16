@@ -84,3 +84,23 @@ code { font-family: var(--mono); font-size: .92em; }
 details summary { cursor: pointer; color: var(--muted); font-size: 14px; }
 .row-between { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; flex-wrap: wrap; }
 @media (max-width: 620px) { header.top { position: static; } }
+
+/* rehber */
+.progress { height: 6px; background: var(--surface-2); border-radius: 3px; overflow: hidden; margin: -4px 0 16px; }
+.progress > span { display: block; height: 100%; background: var(--accent); }
+.hero { border-left: 4px solid var(--accent); padding: 18px 20px; }
+.hero.attention { border-left-color: var(--warn); }
+.hero.waiting { border-left-color: var(--hyp); }
+.hero h2 { font-size: 20px; margin: 4px 0 6px; }
+.warn-text { color: var(--warn); }
+.steps { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+.step { display: grid; grid-template-columns: 30px 1fr; gap: 10px; align-items: start; padding: 10px 12px;
+        background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); }
+.step .dot { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-size: 13px;
+             font-weight: 650; background: var(--surface-2); color: var(--muted); }
+.step.done .dot { background: var(--good); color: var(--surface); }
+.step.attention .dot { background: var(--warn); color: var(--surface); }
+.step.is-current { border-color: var(--accent); }
+.step.is-current .dot { background: var(--accent); color: var(--accent-fg); }
+.step.todo:not(.is-current) { opacity: .72; }
+details > summary { cursor: pointer; }

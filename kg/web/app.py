@@ -29,6 +29,7 @@ from .. import service
 from ..config import DATA_DIR, REPORTS_DIR, ensure_dirs, env, load_dotenv
 from ..llm import set_manual_broker
 from .jobs import JobManager
+from .guide import build_guide, save_state
 from .manual import WebBroker
 
 load_dotenv()
@@ -201,8 +202,33 @@ def dashboard(request: Request):
     except Exception:
         pass
     sets = list((service.sources_config().get("seed_sets") or {}).keys())
-    return page(request, "dashboard.html", stats=stats, error=error, cfg=config_status(), runs=runs,
-                recent_jobs=jobs.list()[:6], sets=sets, spot=service.spotcheck_summary())
+    cfg = config_status()
+    spot = service.spotcheck_summary()
+    phase1_checks = None
+    if snap and stats and stats["claims"] > 0:
+        try:
+            from ..validate import acceptance
+            phase1_checks = acceptance.phase1(snap, service.seed_doi())
+        except Exception as exc:  # rehber, kabul kontrolü hata verse de açılmalı
+            log.warning("Faz 1 kabul kontrolü hesaplanamadı: %s", exc)
+    guide = build_guide(stats, cfg, spot, runs[0].get("id") if runs else None, phase1_checks, jobs)
+    return page(request, "dashboard.html", stats=stats, error=error, cfg=cfg, runs=runs, guide=guide,
+                recent_jobs=jobs.list()[:6], sets=sets, spot=spot, latest_run=runs[0].get("id") if runs else None)
+
+
+@app.post("/guide/approve")
+def guide_approve(request: Request, csrf: str = Form(...), what: str = Form(...), run_id: str = Form("")):
+    """Kullanıcının açık onayı: Faz 1 sonuçlarını kabul etme veya spot-check sonucuyla devam etme."""
+    check_csrf(request, csrf)
+    if what == "phase1":
+        save_state(phase1_approved=True)
+    elif what == "spotcheck":
+        save_state(spotcheck_accepted_run=run_id)
+    elif what == "reset_phase1":
+        save_state(phase1_approved=False)
+    else:
+        raise HTTPException(400)
+    return RedirectResponse("/", status_code=303)
 
 
 @app.get("/claims", response_class=HTMLResponse)
