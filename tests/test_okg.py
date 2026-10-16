@@ -153,3 +153,60 @@ def test_wikidata_link_and_enrich(proj):
     key = Project.entity_key("Devlet", "Türkiye")
     wikidata.set_link(proj, key, None)
     assert "wikidata" not in proj.graph()["entities"][key]
+
+
+def test_http_honours_retry_after_and_user_agent(tmp_path, monkeypatch):
+    import httpx
+
+    from kg import http as http_mod
+    sleeps, seen_ua = [], []
+    monkeypatch.setattr(http_mod.time, "sleep", lambda s: sleeps.append(s))
+    calls = {"n": 0}
+
+    def handler(request):
+        seen_ua.append(request.headers["user-agent"])
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return httpx.Response(429, headers={"Retry-After": "7"})
+        return httpx.Response(200, json={"ok": True})
+
+    h = http_mod.Http(cache_dir=tmp_path)
+    h.client = httpx.Client(transport=httpx.MockTransport(handler), headers={"User-Agent": http_mod.user_agent()})
+    assert h.get("https://www.wikidata.org/w/api.php", params={"a": 1}) == {"ok": True}
+    assert 7.0 in sleeps  # Retry-After süresi kadar beklendi
+    assert "github.com/srht/makalekg" in seen_ua[0]  # Wikimedia UA politikası: iletişim bilgisi
+
+    h2 = http_mod.Http(cache_dir=tmp_path, max_attempts=2)
+    h2.client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(429)))
+    with pytest.raises(http_mod.RateLimited):
+        h2.get("https://www.wikidata.org/w/api.php", params={"b": 2})
+
+
+def test_wikidata_link_resumes_after_rate_limit(proj):
+    from kg.http import RateLimited
+
+    doc = proj.add_document("t.txt", TEXT.encode(), TEXT)
+    extractor.process_document(proj, doc["id"], FakeLLM(lambda *a: fake_answer()))
+
+    class Flaky(FakeHttp):
+        def __init__(self, fail_after):
+            self.n, self.fail_after = 0, fail_after
+
+        def get(self, url, params=None, headers=None, **kw):
+            self.n += 1
+            if self.n > self.fail_after:
+                raise RateLimited(url, 30)
+            return super().get(url, params, headers)
+
+    old = wikidata.SAVE_EVERY
+    wikidata.SAVE_EVERY = 1
+    try:
+        with pytest.raises(wikidata.WikidataBusy) as ei:
+            wikidata.link_entities(proj, http=Flaky(fail_after=1))
+        assert "kaldığı yerden" in str(ei.value)
+        linked = [e for e in proj.graph()["entities"].values() if e.get("wikidata")]
+        assert len(linked) == 1  # ilk varlık kaydedildi
+        out = wikidata.link_entities(proj, http=Flaky(fail_after=99))
+        assert out["linked"] == 2 and out["skipped"] == 1  # kalanlar eşlendi, ilki tekrar aranmadı
+    finally:
+        wikidata.SAVE_EVERY = old
