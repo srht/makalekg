@@ -13,6 +13,15 @@ knowledge graph kuran web uygulaması.
    - **Standart ontoloji dosyası:** OWL / RDF / Turtle / JSON-LD (ör. schema.org, FOAF, Dublin Core, Protégé'de
      hazırladığın ontoloji). Dosyadaki sınıflardan ve ilişkilerden istediklerini seçersin; özgün URI'ler korunur.
 3. **Belgeler:** PDF, Word (.docx), .txt, .md, .html yükle. Sistem her belgeyi ontolojiye göre işler.
+   **Kurumsal arşivden çekme (OAI-PMH):** DSpace, EPrints gibi açık erişim arşivlerinin OAI-PMH adresini ver
+   (DSpace'te genelde `…/oai/request`); "Bağlan" ile setler (topluluk/koleksiyon) listelenir. Kayıtların Dublin Core
+   (`oai_dc`) metadatası tarih aralığı ve kayıt sınırıyla çekilir; her kayıt bir belge olur (başlık, yazarlar, konular,
+   özet; istenirse DSpace ORE üzerinden tam metin PDF). **Metadata grafı** dil modeli olmadan kurulur:
+   Yayın —YAZARI→ Kişi (dc:creator), —KATKIDA_BULUNAN→ Kişi (dc:contributor, ör. danışman), —KONUSU→ Konu (dc:subject),
+   —YAYINCISI→ Kurum (dc:publisher); türler Dublin Core/FOAF/SKOS URI'leriyle ontolojiye eklenir. "Soyad, Ad"
+   biçimindeki adlar "Ad Soyad"a çevrilir, ortak yazar/konu tek düğümde birleşir. Aynı kayıt tekrar çekilirse
+   güncellenir; arşivde silinmişse belge de silinir. Kayıtlar istenirse ontolojiye göre de işlenir; kısa kayıtlar
+   tek istemde gruplanır (kopyala–yapıştır modunda az sayıda yapıştırma).
 4. **Graf:** etkileşimli ağ görünümü. Bir düğüme/oka tıklayınca ayrıntısı ve **hangi belgedeki hangi cümleden
    geldiği** görünür. İki varlık arasındaki bağlantı zincirini bulabilirsin.
 5. **Açık knowledge graph (Wikidata):** varlıkları Wikidata kayıtlarıyla eşle, sonra eşlenen varlıklar arasında
@@ -77,6 +86,7 @@ kg/okg/documents.py   PDF/DOCX/TXT/MD/HTML → metin, parçalama
 kg/okg/extractor.py   çıkarım istemi + deterministik doğrulamalar, ontoloji önerisi
 kg/okg/store.py       proje deposu (data/projects/<proje>/), belge katkılarıyla idempotent graf, Neo4j aynası
 kg/okg/wikidata.py    Wikidata eşleme ve zenginleştirme
+kg/okg/oai.py         OAI-PMH istemcisi (DSpace oai_dc, ORE tam metin), metadata grafı
 kg/web/               FastAPI arayüzü, iş kuyruğu, kopyala–yapıştır aracısı, şablonlar
 kg/web/static/vendor/ vis-network 9.1.9 (MIT/Apache-2.0; CDN'e bağımlı olmamak için depoda)
 ```

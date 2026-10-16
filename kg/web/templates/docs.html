@@ -5,8 +5,9 @@
 <p class="lead">Makale, tez, rapor… dosyalarını yükle. Sistem her belgeyi okuyup ontolojindeki varlıkları ve ilişkileri çıkarır.</p>
 
 {% if not onto.entity_types %}
-<div class="notice bad">Önce ontolojiyi tanımla: sistem neyi arayacağını bilmeden çıkarım yapamaz.
-  <a href="/p/{{ p.slug }}/ontology">Ontolojiye git →</a></div>
+<div class="notice bad">Belgelerden varlık çıkarmak için önce ontolojiyi tanımla: sistem neyi arayacağını bilmeden çıkarım yapamaz.
+  <a href="/p/{{ p.slug }}/ontology">Ontolojiye git →</a>
+  <div class="small muted">Aşağıdaki arşivden çekme ve metadata grafı ontoloji olmadan da çalışır.</div></div>
 {% endif %}
 {% if request.query_params.get("err") %}
 <div class="notice bad">{% for e in request.query_params.get("err").split("|") %}<div>{{ e }}</div>{% endfor %}</div>
@@ -21,6 +22,33 @@
   {% if llm.manual %}<p class="small muted">Kopyala–yapıştır modundasın: her belge için genelde 1 kez istem kopyalayıp yanıt yapıştırman gerekir.</p>{% endif %}
   <div class="actions"><button>Yükle</button></div>
 </form>
+
+<details class="card" style="margin-top:12px" {{ 'open' if not docs }}>
+  <summary><b>Kurumsal arşivden çek (OAI-PMH · DSpace vb.)</b></summary>
+  <p class="small muted" style="margin-top:8px">Üniversitelerin açık erişim arşivlerinden (DSpace, EPrints…) kayıtların Dublin Core
+    metadatasını çeker. Her kayıt bir belge olur (başlık, yazarlar, konular, özet). İstersen yazar–konu–yayıncı bilgilerinden
+    doğrudan graf kurulur (dil modeli gerekmez).</p>
+  <form method="post" action="/p/{{ p.slug }}/oai/harvest" id="oaiForm">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label for="oaiBase">OAI-PMH adresi</label>
+    <div class="row-inline"><input id="oaiBase" type="url" name="base" required placeholder="https://acikerisim.ornek.edu.tr/oai/request">
+      <button type="button" class="secondary" id="oaiTest">Bağlan</button></div>
+    <p class="small muted">DSpace 6/7'de genelde <code>…/oai/request</code>; DSpace 5'te <code>…/oai/request</code> veya <code>…/dspace-oai/request</code>.</p>
+    <div id="oaiInfo" class="small"></div>
+    <label for="oaiSet">Koleksiyon / topluluk (set) <span class="muted">— boş = tüm arşiv</span></label>
+    <select id="oaiSet" name="set_spec"><option value="">— önce "Bağlan"a bas —</option></select>
+    <div class="grid cols-3">
+      <div><label>Başlangıç tarihi</label><input type="date" name="date_from"></div>
+      <div><label>Bitiş tarihi</label><input type="date" name="date_until"></div>
+      <div><label>En fazla kayıt</label><input type="number" name="limit" value="50" min="1" max="5000"></div>
+    </div>
+    <label class="check"><input type="checkbox" name="meta_graph" value="1" checked> Metadata'dan graf kur (yazar, danışman, konu, yayıncı)</label>
+    <label class="check"><input type="checkbox" name="fulltext" value="1"> Tam metin PDF'ini indirmeyi dene (yavaş; arşiv izin veriyorsa)</label>
+    <label class="check"><input type="checkbox" name="process" value="1" {{ 'disabled' if not onto.entity_types }}>
+      Kayıtları ontolojiye göre de işle (dil modeli{% if llm.manual %}; kısa kayıtlar gruplanır, birkaç kopyala–yapıştır{% endif %})</label>
+    <div class="actions"><button>Kayıtları çek</button></div>
+  </form>
+</details>
 
 {% if docs %}
 <div class="row-between" style="margin-top:22px">
@@ -39,7 +67,8 @@
   <tr><th>Belge</th><th>Durum</th><th class="num">Varlık</th><th class="num">İlişki</th><th class="num">Reddedilen</th><th></th></tr>
   {% for d in docs %}
   <tr data-id="{{ d.id }}">
-    <td><a href="/p/{{ p.slug }}/docs/{{ d.id }}">{{ d.filename }}</a><div class="small muted">{{ "{:,}".format(d.chars) }} karakter</div></td>
+    <td><a href="/p/{{ p.slug }}/docs/{{ d.id }}">{{ d.filename }}</a><div class="small muted">{{ "{:,}".format(d.chars) }} karakter
+      {% if d.source %}· <span class="badge">arşiv</span>{% if d.source.fulltext %} <span class="badge good">tam metin</span>{% endif %}{% endif %}</div></td>
     <td class="st">{% include "_docstatus.html" %}</td>
     <td class="num">{{ d.n_entities if d.status == "done" else "—" }}</td>
     <td class="num">{{ d.n_relations if d.status == "done" else "—" }}</td>
@@ -60,6 +89,24 @@
 {% endif %}
 {% endblock %}
 {% block scripts %}
+<script>
+(() => {
+  const btn = document.getElementById('oaiTest'), info = document.getElementById('oaiInfo'), sel = document.getElementById('oaiSet');
+  btn.onclick = async () => {
+    const base = document.getElementById('oaiBase').value.trim();
+    if (!base) return;
+    info.textContent = 'Bağlanılıyor…'; btn.disabled = true;
+    try {
+      const d = await (await fetch('/api/oai/sets?base=' + encodeURIComponent(base), {credentials: 'same-origin'})).json();
+      if (!d.ok) { info.innerHTML = '<span class="bad-text">' + d.error.replace(/</g, '&lt;') + '</span>'; return; }
+      info.innerHTML = '<span class="badge good">bağlandı</span> ' + (d.name || '').replace(/</g, '&lt;') + ' · ' + d.sets.length + ' set' +
+        (d.earliest ? ' · en eski kayıt ' + d.earliest.slice(0, 10) : '');
+      sel.innerHTML = '<option value="">Tüm arşiv</option>' + d.sets.map(s =>
+        `<option value="${s.spec.replace(/"/g, '&quot;')}">${(s.name || s.spec).replace(/</g, '&lt;')}</option>`).join('');
+    } catch (e) { info.textContent = 'Bağlanılamadı.'; } finally { btn.disabled = false; }
+  };
+})();
+</script>
 <script>
 (() => {
   const active = {{ ((docs | selectattr("status", "in", ["queued", "processing"]) | list | length) > 0 or current_job is not none) | tojson }};

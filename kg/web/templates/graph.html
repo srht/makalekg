@@ -15,6 +15,7 @@
   <input type="search" id="q" placeholder="Varlık ara…" list="nodeList">
   <div id="legend" class="legend"></div>
   <label class="check" title="Wikidata'dan eklenen ilişkiler kesikli çizgiyle gösterilir"><input type="checkbox" id="showWd" checked> Wikidata ilişkileri</label>
+  <label class="check" title="Arşiv metadatasından (yazar, konu…) gelen ilişkiler noktalı çizgiyle gösterilir"><input type="checkbox" id="showMeta" checked> Arşiv metadata</label>
 </div>
 
 <div class="graph-wrap">
@@ -73,8 +74,10 @@
   const nodes = new vis.DataSet(data.nodes.map(n => ({id: n.id, label: n.label, group: n.type, title: `${n.label} (${n.type})`,
     value: 1 + (degree[n.id] || 0), color: {background: typeColor[n.type], border: typeColor[n.type], highlight: {background: typeColor[n.type], border: fg}},
     font: {color: fg, size: 13}})));
-  const edgeItem = e => ({id: e.id, from: e.from, to: e.to, label: e.label, arrows: 'to', dashes: e.origin === 'wikidata',
-    color: {color: e.origin === 'wikidata' ? (dark ? '#8f86c9' : '#7a6fc0') : edgeCol, highlight: fg},
+  const originColor = {wikidata: dark ? '#8f86c9' : '#7a6fc0', metadata: dark ? '#6f9fb0' : '#5a8a9a', document: edgeCol};
+  const edgeItem = e => ({id: e.id, from: e.from, to: e.to, label: e.label, arrows: 'to',
+    dashes: e.origin === 'wikidata' ? true : (e.origin === 'metadata' ? [2, 4] : false),
+    color: {color: originColor[e.origin] || edgeCol, highlight: fg},
     font: {size: 10, color: dark ? '#a3a199' : '#67665f', strokeWidth: 3, strokeColor: dark ? '#1d1d1b' : '#ffffff', align: 'middle'}});
   const edges = new vis.DataSet(data.edges.map(edgeItem));
   const net = new vis.Network(document.getElementById('net'), {nodes, edges}, {
@@ -97,9 +100,12 @@
   const showWd = document.getElementById('showWd');
   function applyFilter() {
     nodes.update(data.nodes.map(n => ({id: n.id, hidden: hidden.has(n.type)})));
-    edges.update(data.edges.map(e => ({id: e.id, hidden: (e.origin === 'wikidata' && !showWd.checked)})));
+    edges.update(data.edges.map(e => ({id: e.id, hidden: (e.origin === 'wikidata' && !showWd.checked) ||
+                                                          (e.origin === 'metadata' && !showMeta.checked)})));
   }
-  showWd.onchange = applyFilter;
+  const showMeta = document.getElementById('showMeta');
+  showWd.onchange = applyFilter; showMeta.onchange = applyFilter;
+  if (!data.edges.some(e => e.origin === 'metadata')) showMeta.closest('label').hidden = true;
   if (!data.edges.some(e => e.origin === 'wikidata')) showWd.closest('label').hidden = true;
 
   // arama
@@ -133,7 +139,8 @@
   }
   function showEdge(id) {
     const e = data.edges.find(x => x.id === id); if (!e) return;
-    panel.innerHTML = `<span class="badge ${e.origin === 'wikidata' ? 'hyp' : ''}">${e.origin === 'wikidata' ? 'Wikidata' : 'Belgeden'}</span>
+    const originLabel = {wikidata: 'Wikidata', metadata: 'Arşiv metadata', document: 'Belgeden'}[e.origin];
+    panel.innerHTML = `<span class="badge ${e.origin === 'wikidata' ? 'hyp' : ''}">${originLabel}</span>
       <h3 style="margin-top:6px"><a href="#" data-node="${esc(e.from)}">${esc(byId[e.from]?.label)}</a> <span class="pred">${esc(e.label)}</span>
         <a href="#" data-node="${esc(e.to)}">${esc(byId[e.to]?.label)}</a></h3>
       <h4>Kaynak (${e.sources.length})</h4>${e.sources.map(s => `<div class="small"><b>${esc(s.doc)}</b>

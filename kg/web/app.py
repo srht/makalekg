@@ -14,12 +14,14 @@ import hmac
 import io
 import json
 import logging
+import re
 import secrets
 import time
 from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -28,7 +30,7 @@ from fastapi.templating import Jinja2Templates
 
 from ..config import ensure_dirs, env, load_dotenv
 from ..llm import get_llm, set_manual_broker
-from ..okg import extractor, standards, wikidata
+from ..okg import extractor, oai, standards, wikidata
 from ..okg.documents import SUPPORTED, UnsupportedFile, extract_text
 from ..okg.ontology import TEMPLATES, EntityType, Ontology, RelationType
 from ..okg.store import Project, create_project, list_projects
@@ -343,15 +345,19 @@ def _submit_processing(p: Project, doc_ids: list[str]):
     def run():
         llm = get_llm()
         done = 0
-        for d in doc_ids:
+        for batch in extractor.plan_batches(p, doc_ids, llm):
             try:
-                extractor.process_document(p, d, llm)
-                done += 1
+                if len(batch) == 1:
+                    extractor.process_document(p, batch[0], llm)
+                else:
+                    extractor.process_batch(p, batch, llm)
+                done += len(batch)
             except Exception as exc:
-                log.error("Belge işlenemedi (%s): %s", d, exc)
+                log.error("Belge(ler) işlenemedi (%s): %s", batch, exc)
                 if "iptal" in str(exc):
-                    for rest in doc_ids[doc_ids.index(d) + 1:]:
-                        p.update_document(rest, status="new")
+                    for rest in doc_ids:
+                        if (p.document(rest) or {}).get("status") in ("queued", "processing"):
+                            p.update_document(rest, status="new")
                     raise
         p.sync_neo4j()
         return {"processed": done, "total": len(doc_ids)}
@@ -392,11 +398,12 @@ def doc_page(request: Request, slug: str, doc_id: str):
     if doc is None:
         raise HTTPException(404)
     g = p.graph()
-    ents = [e for e in g["entities"].values() if any(m["doc_id"] == doc_id for m in e["mentions"])]
+    ids = {doc_id, doc_id + oai.META_SUFFIX}
+    ents = [e for e in g["entities"].values() if any(m["doc_id"] in ids for m in e["mentions"])]
     rels = []
     for r in g["relations"].values():
         for s in r["sources"]:
-            if s["doc_id"] == doc_id:
+            if s["doc_id"] in ids:
                 rels.append({"s": g["entities"].get(r["subject"], {}).get("name", "?"), "p": r["predicate"],
                              "o": g["entities"].get(r["object"], {}).get("name", "?"), **s})
     rejected = [x for x in g["rejected"] if x.get("doc_id") == doc_id]
@@ -412,6 +419,53 @@ def status_api(slug: str):
             "busy": jobs.busy(), "manual_pending": bool(broker.pending)}
 
 
+# ---------------------------------------------------------------- arşivden çekme (OAI-PMH)
+
+
+@app.get("/api/oai/sets")
+def oai_sets(base: str):
+    """Arşivi tanır ve setleri (DSpace'te topluluk/koleksiyon) listeler."""
+    try:
+        client = oai.OaiClient(base)
+        info = client.identify()
+        sets = client.list_sets()
+    except oai.OaiError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)})
+    return {"ok": True, "name": info.get("name"), "earliest": info.get("earliest"), "sets": sets}
+
+
+@app.post("/p/{slug}/oai/harvest")
+def oai_harvest(request: Request, slug: str, csrf: str = Form(...), base: str = Form(...), set_spec: str = Form(""),
+                date_from: str = Form(""), date_until: str = Form(""), limit: int = Form(50),
+                meta_graph: str = Form(""), fulltext: str = Form(""), process: str = Form("")):
+    check_csrf(request, csrf)
+    p = get_project(slug)
+    try:
+        oai.check_base_url(base)
+    except oai.OaiError as exc:
+        return RedirectResponse(f"/p/{slug}/docs?err={exc}", status_code=303)
+    limit = max(1, min(int(limit or 50), 5000))
+    for v in (date_from, date_until):
+        if v and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
+            return RedirectResponse(f"/p/{slug}/docs?err=Tarih YYYY-AA-GG biçiminde olmalı", status_code=303)
+
+    def run():
+        res = oai.harvest(p, base, set_spec.strip(), date_from, date_until, limit,
+                          build_metadata_graph=bool(meta_graph), fulltext=bool(fulltext))
+        new_ids = res["added"] + res["updated"]
+        if process and new_ids and p.ontology().is_ready():
+            llm = get_llm()
+            for d in new_ids:
+                p.update_document(d, status="queued")
+            extractor.process_many(p, new_ids, llm)
+            p.sync_neo4j()
+        return {k: (len(v) if isinstance(v, list) else v) for k, v in res.items()}
+
+    title = f"Arşivden çekiliyor ({urlparse(base).netloc})"
+    job = jobs.submit("oai", title, {"slug": slug, "next": f"/p/{slug}/docs"}, run)
+    return RedirectResponse(f"/jobs/{job.id}", status_code=303)
+
+
 # ---------------------------------------------------------------- 3. graf
 
 
@@ -424,6 +478,22 @@ def graph_page(request: Request, slug: str):
     return page(request, "graph.html", **project_ctx(p, "graph"), n_linked=n_linked, n_wd_rel=n_wd_rel)
 
 
+def _source_name(docs: dict[str, str], doc_id: str) -> str:
+    if doc_id == wikidata.WIKIDATA_SOURCE:
+        return "Wikidata"
+    if doc_id.endswith(oai.META_SUFFIX):
+        return docs.get(doc_id[:-len(oai.META_SUFFIX)], doc_id) + " (arşiv metadata)"
+    return docs.get(doc_id, doc_id)
+
+
+def _origin(sources: list[dict[str, Any]]) -> str:
+    if all(s["doc_id"] == wikidata.WIKIDATA_SOURCE for s in sources):
+        return "wikidata"
+    if all(s["doc_id"].endswith(oai.META_SUFFIX) for s in sources):
+        return "metadata"
+    return "document"
+
+
 def _graph_payload(p: Project) -> dict[str, Any]:
     g = p.graph()
     docs = {d["id"]: d["filename"] for d in p.documents()}
@@ -431,13 +501,13 @@ def _graph_payload(p: Project) -> dict[str, Any]:
     for key, e in g["entities"].items():
         nodes.append({"id": key, "label": e["name"], "type": e["type"], "description": e.get("description"),
                       "wikidata": e.get("wikidata"), "alternatives": e.get("wikidata_alternatives") or [],
-                      "mentions": [{"doc": docs.get(m["doc_id"], m["doc_id"]), "text": m["text"]} for m in e["mentions"]][:20]})
+                      "mentions": [{"doc": _source_name(docs, m["doc_id"]), "text": m["text"]} for m in e["mentions"]][:20]})
     edges = []
     for r in g["relations"].values():
-        origin = "wikidata" if all(s["doc_id"] == wikidata.WIKIDATA_SOURCE for s in r["sources"]) else "document"
-        edges.append({"id": r["id"], "from": r["subject"], "to": r["object"], "label": r["predicate"], "origin": origin,
-                      "sources": [{"doc": "Wikidata" if s["doc_id"] == wikidata.WIKIDATA_SOURCE else docs.get(s["doc_id"], s["doc_id"]),
-                                   "sentence": s["sentence"], "confidence": s.get("confidence")} for s in r["sources"]][:10]})
+        edges.append({"id": r["id"], "from": r["subject"], "to": r["object"], "label": r["predicate"],
+                      "origin": _origin(r["sources"]),
+                      "sources": [{"doc": _source_name(docs, s["doc_id"]), "sentence": s["sentence"],
+                                   "confidence": s.get("confidence")} for s in r["sources"]][:10]})
     return {"nodes": nodes, "edges": edges, "types": p.ontology().type_names()}
 
 

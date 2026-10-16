@@ -131,7 +131,7 @@ class Project:
     def _save_documents(self, docs: list[dict[str, Any]]) -> None:
         _write_json(self.dir / "documents.json", docs)
 
-    def add_document(self, filename: str, data: bytes, text: str) -> dict[str, Any]:
+    def add_document(self, filename: str, data: bytes, text: str, source: dict[str, Any] | None = None) -> dict[str, Any]:
         doc_id = uuid.uuid4().hex[:10]
         ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "bin"
         (self.dir / "files").mkdir(parents=True, exist_ok=True)
@@ -140,6 +140,8 @@ class Project:
         (self.dir / "texts" / f"{doc_id}.txt").write_text(text, encoding="utf-8")
         doc = {"id": doc_id, "filename": filename, "chars": len(text), "status": "new", "uploaded_at": now(),
                "n_entities": 0, "n_relations": 0, "n_rejected": 0, "error": None, "processed_at": None}
+        if source:
+            doc["source"] = source
         with self.lock:
             docs = self.documents()
             docs.append(doc)
@@ -154,12 +156,24 @@ class Project:
                     d.update(fields)
             self._save_documents(docs)
 
+    def replace_document_text(self, doc_id: str, text: str, source: dict[str, Any] | None = None,
+                              filename: str | None = None) -> None:
+        """Arşiv kaydı güncellendiğinde metni yeniler; belge yeniden işlenmeyi bekler."""
+        (self.dir / "texts" / f"{doc_id}.txt").write_text(text, encoding="utf-8")
+        fields: dict[str, Any] = {"chars": len(text), "status": "new", "error": None}
+        if source is not None:
+            fields["source"] = source
+        if filename:
+            fields["filename"] = filename
+        self.update_document(doc_id, **fields)
+
     def text(self, doc_id: str) -> str:
         return (self.dir / "texts" / f"{doc_id}.txt").read_text(encoding="utf-8")
 
     def delete_document(self, doc_id: str) -> None:
         with self.lock:
             self.remove_contributions(doc_id)
+            self.remove_contributions(doc_id + "#meta")  # arşiv metadata grafı
             self._save_documents([d for d in self.documents() if d["id"] != doc_id])
             for f in list((self.dir / "files").glob(f"{doc_id}.*")) + [self.dir / "texts" / f"{doc_id}.txt"]:
                 f.unlink(missing_ok=True)

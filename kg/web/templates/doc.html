@@ -5,13 +5,25 @@
 <h1>{{ doc.filename }}</h1>
 <p class="small muted">{{ "{:,}".format(doc.chars) }} karakter · {% set d = doc %}{% include "_docstatus.html" %}</p>
 
+{% if doc.source %}
+<h2>Arşiv kaydı</h2>
+<div class="table-wrap"><table>
+  <tr><th style="width:22%">Alan</th><th>Değer</th></tr>
+  {% if doc.source.url %}<tr><td>Kayıt sayfası</td><td><a href="{{ doc.source.url }}" target="_blank" rel="noopener">{{ doc.source.url }}</a></td></tr>{% endif %}
+  <tr><td>OAI kimliği</td><td class="small">{{ doc.source.identifier }} · {{ doc.source.datestamp }}</td></tr>
+  {% for k, vals in doc.source.dc.items() if k != "identifier" %}
+  <tr><td>dc:{{ k }}</td><td class="small">{% for v in vals %}<div>{{ v[:600] }}</div>{% endfor %}</td></tr>
+  {% endfor %}
+</table></div>
+{% endif %}
+
 <h2>Varlıklar ({{ ents|length }})</h2>
 {% if ents %}
 <div class="table-wrap"><table>
   <tr><th>Ad</th><th>Tür</th><th>Belgede geçtiği biçim</th></tr>
   {% for e in ents %}
   <tr><td><b>{{ e.name }}</b>{% if e.description %}<div class="small muted">{{ e.description }}</div>{% endif %}</td><td>{{ e.type }}</td>
-      <td class="small">{{ e.mentions | selectattr("doc_id", "equalto", doc.id) | map(attribute="text") | unique | join(" · ") }}</td></tr>
+      <td class="small">{{ e.mentions | selectattr("doc_id", "in", [doc.id, doc.id ~ "#meta"]) | map(attribute="text") | unique | join(" · ") }}</td></tr>
   {% endfor %}
 </table></div>
 {% else %}<p class="muted">Henüz yok.</p>{% endif %}

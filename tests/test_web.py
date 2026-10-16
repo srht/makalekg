@@ -198,3 +198,53 @@ def test_templates_are_tracked_by_git():
     files = [str(tpl_dir / n) for n in sorted(names)] + [str(root / "kg/web/static/vendor/vis-network.min.js")]
     ignored = subprocess.run(["git", "check-ignore", *files], cwd=root, capture_output=True, text=True).stdout.split()
     assert not ignored, f".gitignore dışlıyor: {ignored}"
+
+
+def test_oai_harvest_flow(client, monkeypatch, tmp_path):
+    import httpx
+
+    import kg.okg.oai as oai_mod
+    from kg.http import Http
+    from test_oai import make_server
+
+    state = {}
+
+    def mock_http(*a, **k):
+        h = Http(cache_dir=tmp_path / "c", min_interval=0)
+        h.client = httpx.Client(transport=httpx.MockTransport(make_server(state)))
+        return h
+
+    monkeypatch.setattr(oai_mod, "Http", mock_http)
+    c = client
+    slug = _new_project(c, "Arşiv")
+    tok = _csrf(c, f"/p/{slug}/ontology")
+    c.post(f"/p/{slug}/ontology/template", data={"csrf": tok, "key": "uluslararasi"})
+    d = c.get("/api/oai/sets", params={"base": "https://arsiv.ornek.edu.tr/oai/request"}).json()
+    assert d["ok"] and d["name"] == "Örnek Açık Arşiv" and d["sets"][0]["name"] == "Tezler"
+    assert c.get("/api/oai/sets", params={"base": "ftp://x"}).json()["ok"] is False
+    assert "Kurumsal arşivden çek" in c.get(f"/p/{slug}/docs").text
+
+    r = c.post(f"/p/{slug}/oai/harvest", data={"csrf": tok, "base": "https://arsiv.ornek.edu.tr/oai/request",
+                                                "set_spec": "col_1", "limit": "10", "meta_graph": "1", "process": "1"},
+               follow_redirects=False)
+    job_id = r.headers["location"].rsplit("/", 1)[1]
+    pid = _wait_pending(c)
+    prompt = c.get(f"/manual/{pid}/prompt.md").text
+    assert "Türk dış politikasında NATO" in prompt and "Enerji güvenliği" in prompt  # iki kayıt tek istemde
+    ans = {"entities": [{"name": "Türkiye", "type": "Devlet", "mention": "Türkiye", "description": None},
+                        {"name": "NATO", "type": "Uluslararası örgüt", "mention": "NATO", "description": None}],
+           "relations": [{"subject": "Türkiye", "predicate": "ÜYESİDİR", "object": "NATO",
+                          "source_sentence": "Bu tez Türkiye ile NATO ilişkisini inceler.", "confidence": 0.6}]}
+    c.post(f"/manual/{pid}", data={"csrf": tok, "answer": json.dumps(ans, ensure_ascii=False)})
+    assert _wait_job(c, job_id)["status"] == "done"
+    assert any(q.get("set") == "col_1" for q in state["calls"])
+    st = c.get(f"/api/p/{slug}/status").json()["docs"]
+    assert len(st) == 2 and all(x["status"] == "done" for x in st)
+    g = c.get(f"/api/p/{slug}/graph").json()
+    origins = {e["origin"] for e in g["edges"]}
+    assert origins == {"metadata", "document"}
+    doc_edge = next(e for e in g["edges"] if e["origin"] == "document")
+    assert doc_edge["sources"][0]["doc"].startswith("Türk dış politikasında NATO")  # doğru kayda atandı
+    doc_id = next(x["id"] for x in st)
+    page = c.get(f"/p/{slug}/docs/{doc_id}").text
+    assert "Arşiv kaydı" in page and "dc:creator" in page
