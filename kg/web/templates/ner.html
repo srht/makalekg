@@ -26,6 +26,10 @@
     </select>
     <button name="how" value="preset" class="secondary">Hazır öneriyi getir</button>
     <button name="how" value="llm" class="secondary" {{ 'disabled' if not llm.ready }}>Dil modeline sor</button>
+    <div class="radios small" style="margin-top:6px;flex-basis:100%">
+      <label><input type="radio" name="mode" value="merge" {{ 'checked' if cfg.labels }}> Var olanlara ekle (aynı adlıların açıklaması güncellenir)</label>
+      <label><input type="radio" name="mode" value="replace" {{ 'checked' if not cfg.labels }}> Listeyi bununla değiştir</label>
+    </div>
   </form>
 
   <details style="margin-top:12px" {{ 'open' if not cfg.labels }}>
@@ -37,6 +41,10 @@
         <code>"examples": ["XRD", "XRF"]</code> ekleyebilirsin. Ontoloji sayfasının JSON'u da olduğu gibi yüklenir.</p>
       <input type="file" name="file" accept=".json,application/json">
       <textarea name="text" placeholder="…veya JSON'u buraya yapıştır" style="margin-top:8px;font-family:var(--mono);font-size:13px"></textarea>
+    <div class="radios small" style="margin-top:6px">
+      <label><input type="radio" name="mode" value="merge" {{ 'checked' if cfg.labels }}> Var olanlara ekle (aynı adlıların açıklaması güncellenir)</label>
+      <label><input type="radio" name="mode" value="replace" {{ 'checked' if not cfg.labels }}> Listeyi bununla değiştir</label>
+    </div>
       <label class="check"><input type="checkbox" name="with_relations" value="1" checked> İlişki türlerini (relation_types) proje ontolojisine de ekle</label>
       <div class="actions"><button class="secondary">JSON'u yükle</button>
         {% if cfg.labels %}<a class="small" href="/p/{{ p.slug }}/ner/labels.json">Mevcut listeyi JSON olarak indir</a>{% endif %}</div>
@@ -56,6 +64,8 @@
     </table></div>
     <div class="actions">
       <button type="button" class="secondary small-btn" id="addLabel">+ tür ekle</button>
+      {% if cfg.labels %}<button type="submit" class="secondary small-btn" formaction="/p/{{ p.slug }}/ner/clear" name="what" value="labels"
+        formnovalidate onclick="return confirm('Tüm türler listeden silinsin mi? (Ontolojideki türler ve grafta bulunan varlıklar kalır.)')">Tümünü sil</button>{% endif %}
       <label class="small" style="margin:0">Eşik <input type="number" name="threshold" value="{{ cfg.threshold }}" min="0.05" max="0.95" step="0.05" style="width:80px"></label>
       <label class="check small" style="margin:0" title="Kısa etiket yerine açıklamanın tamamı GLiNER'e verilir; test sonuçlarıyla karşılaştırıp karar ver">
         <input type="checkbox" name="use_desc" value="1" {{ 'checked' if cfg.gliner_use_description }}> GLiNER'e açıklamayı ver</label>

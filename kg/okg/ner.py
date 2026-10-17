@@ -311,6 +311,26 @@ def labels_json(project: Project, cfg: dict[str, Any]) -> dict[str, Any]:
             "relation_types": rels}
 
 
+def merge_labels(existing: list[dict[str, Any]], new: list[dict[str, Any]], mode: str = "merge") -> list[dict[str, Any]]:
+    """mode="replace": yeni liste; "merge": var olanlar korunur, aynı adlıların boş olmayan açıklaması/etiketi
+    güncellenir, yeniler sona eklenir."""
+    if mode == "replace":
+        return [dict(l) for l in new]
+    out = [dict(l) for l in existing]
+    idx = {l["name"].casefold(): l for l in out}
+    for l in new:
+        cur = idx.get(l["name"].strip().casefold())
+        if cur is None:
+            cur = dict(l)
+            out.append(cur)
+            idx[l["name"].strip().casefold()] = cur
+            continue
+        for k in ("description", "prompt", "uri"):
+            if (l.get(k) or "").strip():
+                cur[k] = l[k]
+    return out
+
+
 def label_names(cfg: dict[str, Any]) -> list[str]:
     return [l["name"] for l in cfg["labels"]]
 

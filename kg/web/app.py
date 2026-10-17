@@ -876,7 +876,7 @@ def ner_labels(request: Request, slug: str, csrf: str = Form(...), name: list[st
 
 @app.post("/p/{slug}/ner/labels/import")
 async def ner_labels_import(request: Request, slug: str, csrf: str = Form(...), text: str = Form(""),
-                            file: UploadFile | None = File(None), with_relations: str = Form("")):
+                            file: UploadFile | None = File(None), with_relations: str = Form(""), mode: str = Form("merge")):
     """Tür listesini JSON'dan yükler (ontoloji biçimi: domain, entity_types, relation_types)."""
     check_csrf(request, csrf)
     p = get_project(slug)
@@ -890,8 +890,8 @@ async def ner_labels_import(request: Request, slug: str, csrf: str = Form(...), 
     except (ValueError, UnicodeDecodeError) as exc:
         return RedirectResponse(f"/p/{slug}/ner?err=JSON okunamadı: {str(exc)[:200]}", status_code=303)
     cfg = ner.load_config(p)
-    cfg["labels"] = parsed["labels"]
-    if parsed["domain"]:
+    cfg["labels"] = ner.merge_labels(cfg["labels"], parsed["labels"], mode)
+    if parsed["domain"] and (mode == "replace" or not cfg.get("domain")):
         cfg["domain"] = parsed["domain"][:200]
     ner.save_config(p, cfg)
     if with_relations and (parsed["relation_types"] or any(l.get("uri") for l in parsed["labels"])):
@@ -909,7 +909,7 @@ def ner_labels_export(slug: str):
 
 @app.post("/p/{slug}/ner/suggest")
 def ner_suggest(request: Request, slug: str, csrf: str = Form(...), domain: str = Form(""), how: str = Form("preset"),
-                preset: str = Form("")):
+                preset: str = Form(""), mode: str = Form("merge")):
     check_csrf(request, csrf)
     p = get_project(slug)
     cfg = ner.load_config(p)
@@ -919,7 +919,7 @@ def ner_suggest(request: Request, slug: str, csrf: str = Form(...), domain: str 
         if not key:
             ner.save_config(p, cfg)
             return RedirectResponse(f"/p/{slug}/ner?err=" + "Bu alan için hazır liste yok; 'Dil modeline sor'u dene veya listeden seç.", status_code=303)
-        cfg["labels"] = [{"name": n, "description": d} for n, d in ner.DOMAIN_PRESETS[key]["labels"]]
+        cfg["labels"] = ner.merge_labels(cfg["labels"], [{"name": n, "description": d} for n, d in ner.DOMAIN_PRESETS[key]["labels"]], mode)
         ner.save_config(p, cfg)
         return RedirectResponse(f"/p/{slug}/ner#labels", status_code=303)
     if not domain.strip():
@@ -930,7 +930,7 @@ def ner_suggest(request: Request, slug: str, csrf: str = Form(...), domain: str 
     def run():
         labels = ner.suggest_labels(get_llm(), domain.strip(), sample)
         c = ner.load_config(p)
-        c["labels"] = [{"name": l.name, "description": l.description or ""} for l in labels]
+        c["labels"] = ner.merge_labels(c["labels"], [{"name": l.name, "description": l.description or ""} for l in labels], mode)
         ner.save_config(p, c)
         return {"labels": len(labels)}
 
@@ -977,6 +977,11 @@ def ner_clear(request: Request, slug: str, csrf: str = Form(...), what: str = Fo
     check_csrf(request, csrf)
     p = get_project(slug)
     d = ner.ner_dir(p)
+    if what == "labels":
+        cfg = ner.load_config(p)
+        cfg["labels"] = []
+        ner.save_config(p, cfg)
+        return RedirectResponse(f"/p/{slug}/ner#labels", status_code=303)
     if what == "dataset":
         (d / "dataset.jsonl").unlink(missing_ok=True)
         (d / "state.json").unlink(missing_ok=True)

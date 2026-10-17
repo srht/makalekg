@@ -311,3 +311,32 @@ def test_labels_import_web(webc):
     from kg.okg import ner
     cfg = ner.load_config(st.Project(slug))
     assert cfg["gliner_use_description"] and cfg["labels"][1]["prompt"] == "çıktı" and "prompt" not in cfg["labels"][0]
+
+
+def test_labels_merge_and_clear(webc):
+    c, _ = webc
+    from test_web import _csrf, _new_project
+    import kg.okg.store as st
+    from kg.okg import ner
+    slug = _new_project(c, "Birleştirme")
+    tok = _csrf(c, f"/p/{slug}/ner")
+    cfgp = lambda: ner.load_config(st.Project(slug))
+    c.post(f"/p/{slug}/ner/labels/import", data={"csrf": tok, "text": SAMPLE_JSON, "mode": "replace"})
+    assert len(cfgp()["labels"]) == 4
+    # var olanlara ekle: aynı ad güncellenir, yeni ad eklenir, eskiler kalır
+    extra = '{"entity_types": [{"name": "atık", "description": "Yeni açıklama"}, {"name": "Mevzuat", "description": "Yönetmelik"}]}'
+    c.post(f"/p/{slug}/ner/labels/import", data={"csrf": tok, "text": extra, "mode": "merge"})
+    labels = cfgp()["labels"]
+    assert [l["name"] for l in labels] == ["Süreç", "AnalizYöntemi", "Ürün", "Atık", "Mevzuat"]
+    assert labels[3]["description"] == "Yeni açıklama" and labels[2]["prompt"] == "ürün veya çıktı"
+    assert cfgp()["domain"].startswith("Atık gazlaştırma")  # birleştirmede alan korunur
+    # hazır öneriyi ekle
+    c.post(f"/p/{slug}/ner/suggest", data={"csrf": tok, "domain": "", "preset": "genel", "how": "preset", "mode": "merge"})
+    names = [l["name"] for l in cfgp()["labels"]]
+    assert names[:5] == ["Süreç", "AnalizYöntemi", "Ürün", "Atık", "Mevzuat"] and "Kişi" in names
+    # değiştir
+    c.post(f"/p/{slug}/ner/suggest", data={"csrf": tok, "domain": "", "preset": "genel", "how": "preset", "mode": "replace"})
+    assert "Süreç" not in [l["name"] for l in cfgp()["labels"]]
+    assert "Tümünü sil" in c.get(f"/p/{slug}/ner").text
+    c.post(f"/p/{slug}/ner/clear", data={"csrf": tok, "what": "labels"})
+    assert cfgp()["labels"] == []
