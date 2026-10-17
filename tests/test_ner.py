@@ -340,3 +340,66 @@ def test_labels_merge_and_clear(webc):
     assert "Tümünü sil" in c.get(f"/p/{slug}/ner").text
     c.post(f"/p/{slug}/ner/clear", data={"csrf": tok, "what": "labels"})
     assert cfgp()["labels"] == []
+
+
+def test_settings_and_selection(proj):
+    from kg.okg import ner
+    p, ids = proj
+    cfg = ner.load_config(p)
+    cfg["labels"] = [{"name": n, "description": d} for n, d in ner.DOMAIN_PRESETS["elektrik"]["labels"]]
+    ner.save_config(p, cfg)
+    s = ner.update_settings(p, "annotate", {"n": "3", "count_mode": "total", "per_request": "999", "selection": "kötü",
+                                            "keyword": "inverter", "batch_api": False, "bilinmeyen": 1})
+    assert s["n"] == 3 and s["count_mode"] == "total" and s["per_request"] == 100 and s["selection"] == "random"
+    assert s["batch_api"] is False and "bilinmeyen" not in s
+    # anahtar kelime süzgeci: yalnız "inverter" geçen belgeler (b, c, e, f)
+    assert set(ner.select_docs(p, keyword="inverter")) == {ids[n] for n in ("b.txt", "c.txt", "e.txt", "f.txt")}
+    assert ner.select_docs(p, selection="longest")[0] == ids["a.txt"]
+    llm = FakeLLM(responder)
+    assert ner.annotate(p, llm)["added"] == 3  # kayıtlı ayarlar: toplam 3, "inverter" süzgeci
+    assert ner.annotate(p, llm)["added"] == 0  # hedefe ulaşıldı
+    assert ner.annotate(p, llm, n=4)["added"] == 1  # hedef 4'e çıkınca yalnız 1 yeni
+    assert len(ner.load_dataset(p)) == 4
+    # veri setini küçült / belge çıkar
+    assert ner.remove_from_dataset(p, keep=2) == 2 and len(ner.load_dataset(p)) == 2
+    gone = ner.load_dataset(p)[0]["doc_id"]
+    assert ner.remove_from_dataset(p, doc_ids=[gone]) == 1
+    assert p.document(gone).get("ner") is None
+    # uygulama ayarları: sınır ve "henüz işlenmemiş" kapsamı
+    ner.annotate(p, llm, doc_ids=[ids["a.txt"], ids["d.txt"]])
+    ner.update_settings(p, "train", {"kind": "sozluk", "test_ratio": "0"})
+    m = ner.train(p)
+    assert m["model_kind"] == "sozluk" and m["n_test"] == 0
+    ner.update_settings(p, "apply", {"limit": 2, "scope": "new"})
+    assert ner.apply(p)["docs"] == 2
+    remaining = len([d for d in p.documents() if not d.get("ner")])
+    assert remaining > 0 and ner.apply(p, limit=0)["docs"] == remaining
+
+
+def test_ner_settings_web(webc):
+    c, _ = webc
+    from test_web import _csrf, _new_project
+    import kg.okg.store as st
+    from kg.okg import ner
+    slug = _new_project(c, "Ayarlar")
+    p = st.Project(slug)
+    for name, text in DOCS.items():
+        p.add_document(name, text.encode(), text)
+    tok = _csrf(c, f"/p/{slug}/ner")
+    r = c.post(f"/p/{slug}/ner/annotate", data={"csrf": tok, "_bools": "batch_api,add_to_graph", "action": "save",
+                                                "n": "4", "count_mode": "total", "source": "upload", "keyword": "kesici",
+                                                "per_request": "3", "add_to_graph": "1"}, follow_redirects=False)
+    assert r.status_code == 303 and "ok=" in r.headers["location"]
+    s = ner.get_settings(ner.load_config(p))["annotate"]
+    assert s["n"] == 4 and s["count_mode"] == "total" and s["batch_api"] is False and s["add_to_graph"] is True
+    page = c.get(f"/p/{slug}/ner").text
+    assert 'name="n" value="4"' in page and 'value="kesici"' in page and "Ayarlar kaydedildi" not in page
+    prev = c.get(f"/api/p/{slug}/ner/preview", params={"step": "annotate", "keyword": "kesici", "n": 4, "count_mode": "total"}).json()
+    assert prev == {"available": 2, "will_process": 2, "in_dataset": 0}
+    r = c.post(f"/p/{slug}/ner/train", data={"csrf": tok, "action": "save", "kind": "sozluk", "epochs": "7", "lr": "1e-5"},
+               follow_redirects=False)
+    t = ner.get_settings(ner.load_config(p))["train"]
+    assert t["epochs"] == 7 and t["lr"] == 1e-5 and t["kind"] == "sozluk"
+    c.post(f"/p/{slug}/ner/apply", data={"csrf": tok, "_bools": "skip_done", "action": "save", "limit": "5", "threshold": "0.7"})
+    assert ner.get_settings(ner.load_config(p))["apply"]["limit"] == 5 and ner.load_config(p)["threshold"] == 0.7
+    assert c.get(f"/api/p/{slug}/ner/preview", params={"step": "apply", "limit": 2}).json()["will_process"] == 2

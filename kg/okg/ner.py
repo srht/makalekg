@@ -178,6 +178,91 @@ def load_config(project: Project) -> dict[str, Any]:
     return cfg
 
 
+DEFAULT_SETTINGS: dict[str, dict[str, Any]] = {
+    "annotate": {"n": 200, "count_mode": "add", "selection": "random", "source": "all", "keyword": "", "min_chars": 40,
+                 "per_request": 10, "max_chars": 0, "batch_api": True, "add_to_graph": True, "model": "", "seed": 7},
+    "train": {"kind": "auto", "epochs": 5, "batch_size": 8, "lr": 5e-6, "others_lr": 1e-5, "test_ratio": 0.2},
+    "apply": {"scope": "unlabeled", "limit": 0, "selection": "first", "source": "all", "keyword": "", "min_chars": 0,
+              "skip_done": False, "batch_docs": 16},
+}
+_LIMITS = {"n": (1, 20000), "min_chars": (0, 100000), "per_request": (1, 100), "max_chars": (0, 400000), "seed": (0, 10**9),
+           "epochs": (1, 100), "batch_size": (1, 128), "lr": (1e-8, 1e-2), "others_lr": (1e-8, 1e-2),
+           "test_ratio": (0.0, 0.5), "limit": (0, 10**7), "batch_docs": (1, 512)}
+_CHOICES = {"count_mode": ("add", "total"), "selection": ("random", "first", "last", "longest", "shortest"),
+            "source": ("all", "archive", "upload"), "kind": ("auto", "gliner", "sozluk"), "scope": ("unlabeled", "all", "new")}
+
+
+def get_settings(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    saved = cfg.get("settings") or {}
+    return {step: {**defaults, **{k: v for k, v in (saved.get(step) or {}).items() if k in defaults}}
+            for step, defaults in DEFAULT_SETTINGS.items()}
+
+
+def clean_settings(step: str, values: dict[str, Any]) -> dict[str, Any]:
+    """Formdan gelen değerleri türüne çevirip sınırlar içine alır; bilinmeyen alanları atar."""
+    out = {}
+    for k, default in DEFAULT_SETTINGS[step].items():
+        if k not in values:
+            continue
+        v = values[k]
+        try:
+            if isinstance(default, bool):
+                v = v in (True, 1, "1", "on", "true", "evet")
+            elif isinstance(default, int):
+                v = int(float(v))
+            elif isinstance(default, float):
+                v = float(v)
+            else:
+                v = str(v).strip()[:300]
+        except (TypeError, ValueError):
+            continue
+        if k in _LIMITS and not isinstance(v, bool):
+            lo, hi = _LIMITS[k]
+            v = type(default)(min(hi, max(lo, v)))
+        if k in _CHOICES and v not in _CHOICES[k]:
+            continue
+        out[k] = v
+    return out
+
+
+def update_settings(project: Project, step: str, values: dict[str, Any]) -> dict[str, Any]:
+    cfg = load_config(project)
+    st = cfg.setdefault("settings", {})
+    st[step] = {**(st.get(step) or {}), **clean_settings(step, values)}
+    _write(ner_dir(project) / "config.json", cfg)
+    return get_settings(cfg)[step]
+
+
+def select_docs(project: Project, *, exclude: set[str] = frozenset(), n: int = 0, selection: str = "first",
+                source: str = "all", keyword: str = "", min_chars: int = 0, seed: int = 7,
+                only: Callable[[dict[str, Any]], bool] | None = None) -> list[str]:
+    """Belge seçimi: kaynak (arşiv / yüklenen), anahtar kelime (başlıkta veya metinde), en az uzunluk, sıralama, adet."""
+    kws = [k for k in norm_name(keyword).split() if k]
+    out = []
+    for d in project.documents():
+        if d["id"] in exclude or d.get("chars", 0) < min_chars:
+            continue
+        if source == "archive" and not d.get("source"):
+            continue
+        if source == "upload" and d.get("source"):
+            continue
+        if only and not only(d):
+            continue
+        if kws:
+            hay = norm_name(d.get("filename", "") + " " + project.text(d["id"])[:20000])
+            if not all(k in hay for k in kws):
+                continue
+        out.append(d)
+    if selection == "random":
+        random.Random(seed).shuffle(out)
+    elif selection == "last":
+        out.reverse()
+    elif selection in ("longest", "shortest"):
+        out.sort(key=lambda d: d.get("chars", 0), reverse=selection == "longest")
+    ids = [d["id"] for d in out]
+    return ids[:n] if n else ids
+
+
 def save_config(project: Project, cfg: dict[str, Any]) -> None:
     seen, labels = set(), []
     for l in cfg.get("labels", []):
@@ -505,30 +590,43 @@ def spans_from_answer(text: str, items: Iterable[dict[str, Any]], labels: set[st
 
 
 def choose_docs(project: Project, n: int, exclude: set[str], seed: int = 7, min_chars: int = 40) -> list[str]:
-    cands = [d["id"] for d in project.documents() if d["id"] not in exclude and d.get("chars", 0) >= min_chars]
-    random.Random(seed).shuffle(cands)
-    return cands[:n]
+    return select_docs(project, exclude=exclude, n=n, selection="random", seed=seed, min_chars=min_chars)
 
 
-def annotate(project: Project, llm: LLM, n: int = 200, per_request: int = 10, use_batch_api: bool | None = None,
-             doc_ids: list[str] | None = None, add_to_graph: bool = True, poll_seconds: float = 30.0) -> dict[str, Any]:
-    """N belgeyi dil modeliyle etiketleyip veri setine ekler. Var olan kayıtlar atlanır (kaldığı yerden devam)."""
+def annotate(project: Project, llm: LLM, n: int | None = None, per_request: int | None = None,
+             use_batch_api: bool | None = None, doc_ids: list[str] | None = None, add_to_graph: bool | None = None,
+             poll_seconds: float = 30.0, **overrides: Any) -> dict[str, Any]:
+    """Belgeleri dil modeliyle etiketleyip veri setine ekler. Var olan kayıtlar atlanır (kaldığı yerden devam).
+    Verilmeyen parametreler projenin kayıtlı ayarlarından (settings.annotate) gelir."""
     cfg = load_config(project)
     labels = label_names(cfg)
     if not labels:
         raise ValueError("Önce varlık türlerini (etiketleri) belirle")
+    s = get_settings(cfg)["annotate"]
+    s.update(clean_settings("annotate", {k: v for k, v in
+                                         {"n": n, "per_request": per_request, "add_to_graph": add_to_graph, **overrides}.items()
+                                         if v is not None}))
     rows = load_dataset(project)
     done = {r["doc_id"] for r in rows}
-    ids = [d for d in (doc_ids or choose_docs(project, n, done)) if d not in done]
+    if doc_ids is None:
+        want = max(0, s["n"] - len(done)) if s["count_mode"] == "total" else s["n"]
+        doc_ids = select_docs(project, exclude=done, n=want, selection=s["selection"], source=s["source"],
+                              keyword=s["keyword"], min_chars=s["min_chars"], seed=s["seed"]) if want else []
+    ids = [d for d in doc_ids if d not in done]
     texts = {d: project.text(d) for d in ids}
     texts = {d: t for d, t in texts.items() if t.strip()}
     if not texts:
-        return {"added": 0, "skipped": len(done)}
-    max_chars = MANUAL_GROUP_CHARS if is_manual(llm) else API_GROUP_CHARS
+        log.info("Etiketlenecek yeni belge yok (veri setinde %d belge)", len(done))
+        return {"added": 0, "skipped": len(done), "total_docs": len(done)}
+    if s["model"] and not is_manual(llm) and hasattr(llm, "model_name"):
+        llm.model_name = s["model"]  # etiketleme için farklı (ör. daha ucuz) model
+    add_to_graph = s["add_to_graph"]
+    per_request = s["per_request"]
+    max_chars = s["max_chars"] or (MANUAL_GROUP_CHARS if is_manual(llm) else API_GROUP_CHARS)
     groups = plan_groups(texts, max_chars, max(1, per_request))
     schema = _annotation_schema(labels)
     if use_batch_api is None:
-        use_batch_api = hasattr(llm, "client") and hasattr(getattr(llm, "client"), "messages")
+        use_batch_api = s["batch_api"] and hasattr(llm, "client") and hasattr(getattr(llm, "client"), "messages")
     log.info("%d belge, %d istekte etiketlenecek (%s)", len(texts), len(groups),
              "Anthropic Message Batches" if use_batch_api else "istek başına birden çok belge")
 
@@ -827,10 +925,15 @@ def evaluate(model: Any, rows: list[dict[str, Any]], labels: list[str], threshol
 # ---------------------------------------------------------------- eğitim
 
 
-def train(project: Project, kind: str = "auto", epochs: int = 5, test_ratio: float = 0.2,
-          base_model: str | None = None, evaluate_base: bool = True) -> dict[str, Any]:
+def train(project: Project, kind: str | None = None, epochs: int | None = None, test_ratio: float | None = None,
+          base_model: str | None = None, evaluate_base: bool = True, **overrides: Any) -> dict[str, Any]:
+    """Verilmeyen parametreler projenin kayıtlı ayarlarından (settings.train) gelir."""
     cfg = load_config(project)
     labels = label_names(cfg)
+    s = get_settings(cfg)["train"]
+    s.update(clean_settings("train", {k: v for k, v in {"kind": kind, "epochs": epochs, "test_ratio": test_ratio,
+                                                        **overrides}.items() if v is not None}))
+    kind, epochs, test_ratio = s["kind"], s["epochs"], s["test_ratio"]
     rows = [r for r in load_dataset(project) if r["entities"] or r["text"]]
     if len(rows) < 2:
         raise ValueError("Eğitim için en az birkaç etiketli belge gerekir (önce 2. adımı çalıştır)")
@@ -841,7 +944,7 @@ def train(project: Project, kind: str = "auto", epochs: int = 5, test_ratio: flo
     train_rows, test_rows = split_dataset(rows, test_ratio)
     d = ner_dir(project)
     th = float(cfg.get("threshold", 0.5))
-    metrics: dict[str, Any] = {"model_kind": kind, "n_train": len(train_rows), "n_test": len(test_rows),
+    metrics: dict[str, Any] = {"model_kind": kind, "n_train": len(train_rows), "n_test": len(test_rows), "test_ratio": test_ratio,
                                "labels": labels, "trained_at": time.strftime("%Y-%m-%d %H:%M")}
     if kind == "gliner":
         base = base_model or cfg["base_model"]
@@ -851,9 +954,9 @@ def train(project: Project, kind: str = "auto", epochs: int = 5, test_ratio: flo
         if evaluate_base and test_rows:
             log.info("Eğitimden önce temel model (sıfır örnekle) test ediliyor")
             metrics["base"] = evaluate(m, test_rows, labels, th)
-        m.train(train_rows, d / "model", epochs=epochs)
+        m.train(train_rows, d / "model", epochs=epochs, batch_size=s["batch_size"], lr=s["lr"], others_lr=s["others_lr"])
         metrics["base_model"] = base
-        metrics["epochs"] = epochs
+        metrics.update(epochs=epochs, batch_size=s["batch_size"], lr=s["lr"], others_lr=s["others_lr"])
     else:
         m = GazetteerModel.train(train_rows)
         m.save(d / "gazetteer.json")
@@ -921,17 +1024,25 @@ def write_entities(project: Project, doc_id: str, text: str, ents: list[dict[str
 
 
 def apply(project: Project, doc_ids: list[str] | None = None, threshold: float | None = None,
-          batch_docs: int = 16) -> dict[str, Any]:
-    """Eğitilmiş modelle belgelerden varlık çıkarır. doc_ids verilmezse veri setinde olmayan tüm belgeler."""
+          batch_docs: int | None = None, **overrides: Any) -> dict[str, Any]:
+    """Eğitilmiş modelle belgelerden varlık çıkarır. doc_ids verilmezse kayıtlı ayarlara (settings.apply) göre seçilir:
+    scope = unlabeled (veri setinde olmayanlar) | new (henüz hiç NER uygulanmamışlar) | all; ayrıca süzgeç ve adet sınırı."""
     cfg = load_config(project)
     labels = label_names(cfg)
     model = trained_model(project)
     if model is None:
         raise ValueError("Önce modeli eğit (3. adım)")
+    s = get_settings(cfg)["apply"]
+    s.update(clean_settings("apply", {k: v for k, v in {"batch_docs": batch_docs, **overrides}.items() if v is not None}))
+    batch_docs = s["batch_docs"]
     th = float(cfg.get("threshold", 0.5) if threshold is None else threshold)
     labeled = {r["doc_id"] for r in load_dataset(project)}
     if doc_ids is None:
-        doc_ids = [d["id"] for d in project.documents() if d["id"] not in labeled]
+        exclude = set() if s["scope"] == "all" else labeled
+        only = (lambda d: not d.get("ner")) if s["scope"] == "new" or s["skip_done"] else None
+        doc_ids = select_docs(project, exclude=exclude, n=s["limit"], selection=s["selection"], source=s["source"],
+                              keyword=s["keyword"], min_chars=s["min_chars"], only=only)
+    log.info("%d belgeye uygulanacak (eşik %.2f)", len(doc_ids), th)
     pubs = publication_keys(project)
     total, n_docs = 0, 0
     t0 = time.time()
@@ -945,6 +1056,27 @@ def apply(project: Project, doc_ids: list[str] | None = None, threshold: float |
         log.info("%d/%d belge işlendi (%d varlık, %.1f sn)", n_docs, len(doc_ids), total, time.time() - t0)
     project.sync_neo4j()
     return {"docs": n_docs, "entities": total, "seconds": round(time.time() - t0, 1)}
+
+
+def remove_from_dataset(project: Project, doc_ids: Iterable[str] | None = None, keep: int | None = None,
+                        seed: int = 7) -> int:
+    """Veri setinden belge çıkarır: belirli belgeler veya rastgele seçilip `keep` belgeye indirerek.
+    Çıkarılan belgelerin dil modeli etiketleri graftan da kaldırılır."""
+    rows = load_dataset(project)
+    if keep is not None:
+        order = list(rows)
+        random.Random(seed).shuffle(order)
+        drop = {r["doc_id"] for r in order[max(0, keep):]}
+    else:
+        drop = set(doc_ids or [])
+    kept = [r for r in rows if r["doc_id"] not in drop]
+    removed = [r["doc_id"] for r in rows if r["doc_id"] in drop]
+    save_dataset(project, kept)
+    for d in removed:
+        if (project.document(d) or {}).get("ner") == "llm":
+            project.remove_contributions(d + NER_SUFFIX)
+            project.update_document(d, ner=None, n_ner=0)
+    return len(removed)
 
 
 def clear_ner(project: Project) -> int:

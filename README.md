@@ -70,6 +70,13 @@ Binlerce DSpace kaydını tek tek dil modeline göndermek yerine (Belgeler → "
 4. **Uygulama:** model etiketlenmemiş belgelerin hepsinden varlık çıkarır (dil modeli yok, ücretsiz). Varlıklar grafa
    `<belge>#ner` katkısı olarak yazılır ve arşiv kaydının Yayın düğümüne `BAHSEDER` ilişkisiyle bağlanır.
 
+Her adımın ayarları projede saklanır ve sayfadan değiştirilebilir ("Yalnızca ayarları kaydet"): belge sayısı
+("bu kadar yeni belge ekle" veya "veri setini toplam bu sayıya tamamla"), belge seçimi (arşiv/yüklenen, anahtar kelime,
+en az uzunluk, rastgele/ilk/son/en uzun/en kısa), istek başına belge ve karakter, etiketleme modeli, Batch API;
+eğitimde model türü, test payı, tur, yığın boyutu, öğrenme oranları; uygulamada kapsam, en fazla belge, eşik ve süzgeçler.
+Sayfa, seçilen ayarlarla kaç belgenin işleneceğini anında gösterir. Veri setinden belge çıkarılabilir veya veri seti
+rastgele N belgeye indirilebilir.
+
 Komut satırı: `python -m kg.okg.ner_cli run <proje> --domain elektrik --n 200` (ayrıca `labels`, `annotate`,
 `train`, `apply`, `status`). Docker imajı GLiNER'i (torch CPU) `WITH_GLINER=1` ile kurar (varsayılan; imaja ~1 GB ekler,
 `WITH_GLINER=0` ile kapatılır). Temel model ilk kullanımda Hugging Face'ten indirilir ve `data/hf` altında kalır.

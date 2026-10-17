@@ -48,18 +48,21 @@ def cmd_labels(p: Project, a: argparse.Namespace) -> None:
 
 def cmd_annotate(p: Project, a: argparse.Namespace) -> None:
     llm = get_llm()
+    extra = {k: v for k, v in {"count_mode": "total" if a.total else None, "source": a.source,
+                               "keyword": a.keyword}.items() if v is not None}
     print(json.dumps(ner.annotate(p, llm, n=a.n, per_request=a.per_request,
-                                  use_batch_api=None if not a.no_batch_api else False), ensure_ascii=False))
+                                  use_batch_api=None if not a.no_batch_api else False, **extra), ensure_ascii=False))
 
 
 def cmd_train(p: Project, a: argparse.Namespace) -> None:
-    m = ner.train(p, kind=a.kind, epochs=a.epochs)
+    m = ner.train(p, kind=a.kind, epochs=a.epochs, test_ratio=a.test_ratio,
+                  **({"batch_size": a.batch_size} if a.batch_size else {}))
     print(json.dumps({k: m.get(k) for k in ("model_kind", "n_train", "n_test", "base", "test")}, ensure_ascii=False, indent=1))
 
 
 def cmd_apply(p: Project, a: argparse.Namespace) -> None:
-    ids = [d["id"] for d in p.documents()] if a.all else None
-    print(json.dumps(ner.apply(p, ids, threshold=a.threshold), ensure_ascii=False))
+    extra = {k: v for k, v in {"scope": "all" if a.all else None, "limit": a.limit}.items() if v is not None}
+    print(json.dumps(ner.apply(p, threshold=a.threshold, **extra), ensure_ascii=False))
 
 
 def cmd_status(p: Project, _a: argparse.Namespace) -> None:
@@ -80,14 +83,20 @@ def main(argv: list[str] | None = None) -> None:
             s.add_argument("--preset", default="", choices=[""] + list(ner.DOMAIN_PRESETS))
             s.add_argument("--llm", action="store_true", help="türleri dil modelinden öner")
         if name in ("annotate", "run"):
-            s.add_argument("--n", type=int, default=200)
-            s.add_argument("--per-request", type=int, default=10)
+            s.add_argument("--n", type=int, default=None, help="belge sayısı (varsayılan: kayıtlı ayar, 200)")
+            s.add_argument("--per-request", type=int, default=None)
+            s.add_argument("--total", action="store_true", help="--n veri setinin toplam hedefi olsun")
+            s.add_argument("--source", choices=["all", "archive", "upload"], default=None)
+            s.add_argument("--keyword", default=None)
             s.add_argument("--no-batch-api", action="store_true", help="Anthropic Batch API yerine anlık istekler")
         if name in ("train", "run"):
-            s.add_argument("--kind", default="auto", choices=["auto", "gliner", "sozluk"])
-            s.add_argument("--epochs", type=int, default=5)
+            s.add_argument("--kind", default=None, choices=["auto", "gliner", "sozluk"])
+            s.add_argument("--epochs", type=int, default=None)
+            s.add_argument("--batch-size", type=int, default=None)
+            s.add_argument("--test-ratio", type=float, default=None)
         if name in ("apply", "run"):
             s.add_argument("--all", action="store_true")
+            s.add_argument("--limit", type=int, default=None, help="en fazla kaç belgeye uygulansın")
             s.add_argument("--threshold", type=float, default=None)
     a = ap.parse_args(argv)
     p = _project(a.project)

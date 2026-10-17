@@ -7,6 +7,7 @@
   ({% if st.gliner %}<b>GLiNER</b>{% else %}sözlük modeli{% endif %}) eğit, sonra kalan kayıtların hepsinden bu modelle varlık çıkar.</p>
 
 {% if request.query_params.get("err") %}<div class="notice bad">{{ request.query_params.get("err") }}</div>{% endif %}
+{% if request.query_params.get("ok") %}<div class="notice good small">{{ request.query_params.get("ok") }}</div>{% endif %}
 {% if not st.gliner %}
 <div class="notice small">GLiNER bu sunucuda kurulu değil; eğitimde <b>sözlük modeli</b> kullanılır (veri setinde görülen ifadeleri tanır,
   yeni adları genelleyemez). GLiNER için Docker imajını <code>WITH_GLINER=1</code> ile kur (varsayılan) veya
@@ -78,26 +79,54 @@
   </form>
 </div>
 
+{% macro doc_filter(x) %}
+    <div class="grid cols-4">
+      <div><label>Hangi belgeler</label><select name="source">
+        <option value="all" {{ 'selected' if x.source == 'all' }}>Hepsi</option>
+        <option value="archive" {{ 'selected' if x.source == 'archive' }}>Yalnız arşivden (OAI/DSpace)</option>
+        <option value="upload" {{ 'selected' if x.source == 'upload' }}>Yalnız yüklenen dosyalar</option></select></div>
+      <div><label>Sıra</label><select name="selection">
+        <option value="random" {{ 'selected' if x.selection == 'random' }}>Rastgele</option>
+        <option value="first" {{ 'selected' if x.selection == 'first' }}>İlk eklenenler</option>
+        <option value="last" {{ 'selected' if x.selection == 'last' }}>Son eklenenler</option>
+        <option value="longest" {{ 'selected' if x.selection == 'longest' }}>En uzunlar</option>
+        <option value="shortest" {{ 'selected' if x.selection == 'shortest' }}>En kısalar</option></select></div>
+      <div><label>Anahtar kelime <span class="muted">(başlık/metin)</span></label><input type="text" name="keyword" value="{{ x.keyword }}" placeholder="ör. gazlaştırma"></div>
+      <div><label>En az karakter</label><input type="number" name="min_chars" value="{{ x.min_chars }}" min="0"></div>
+    </div>
+{% endmacro %}
+
 <!-- 2. veri seti -->
-<div class="card" style="margin-top:14px">
+{% set a = ns.annotate %}
+<div class="card" id="annotate" style="margin-top:14px">
   <h2 style="margin-top:0">2. Eğitim verisi (dil modeliyle etiketleme)</h2>
   {% if st.pending_batch %}<div class="notice small">Anthropic'e gönderilmiş bir paket sonuç bekliyor (<code>{{ st.pending_batch }}</code>).
     Aşağıdan yeniden başlatırsan aynı paketin sonucu beklenir, yeniden ücretlendirilmez.</div>{% endif %}
   <p class="small muted">Seçilen belgeler gruplar hâlinde dil modeline gönderilir (bir istekte birden çok belge). Model varlıkları
-    metinde geçtiği biçimiyle döndürür; sistem metinde birebir doğrulayıp her geçişin yerini işaretler. Zaten etiketli belgeler atlanır.</p>
-  <form method="post" action="/p/{{ p.slug }}/ner/annotate">
-    <input type="hidden" name="csrf" value="{{ csrf }}">
-    <div class="grid cols-3">
-      <div><label>Kaç belge</label><input type="number" name="n" value="{{ [200, st.n_unlabeled] | min if st.n_unlabeled else 200 }}" min="1" max="5000"></div>
-      <div><label>İstek başına belge</label><input type="number" name="per_request" value="10" min="1" max="50"></div>
-      <div><label>&nbsp;</label>
-        {% if llm.backend == "anthropic" %}<label class="check"><input type="checkbox" name="batch_api" value="1" checked> Anthropic Batch API (yarı fiyat; sonuç dakikalar–saatler içinde)</label>
-        {% elif llm.manual %}<p class="small muted" style="margin:0">Kopyala–yapıştır modunda her istek bir yapıştırma demek; "istek başına belge"yi artırabilirsin.</p>{% endif %}
-      </div>
+    metinde geçtiği biçimiyle döndürür; sistem metinde birebir doğrulayıp her geçişin yerini işaretler. Zaten etiketli belgeler atlanır;
+    sayıyı artırıp yeniden çalıştırarak veri setini büyütebilirsin. Ayarlar projede saklanır.</p>
+  <form method="post" action="/p/{{ p.slug }}/ner/annotate" class="ner-step" data-step="annotate">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="_bools" value="batch_api,add_to_graph">
+    <div class="grid cols-4">
+      <div><label>Belge sayısı</label><input type="number" name="n" value="{{ a.n }}" min="1" max="20000"></div>
+      <div><label>Sayı ne demek</label><select name="count_mode">
+        <option value="add" {{ 'selected' if a.count_mode == 'add' }}>Bu kadar yeni belge ekle</option>
+        <option value="total" {{ 'selected' if a.count_mode == 'total' }}>Veri setini toplam bu sayıya tamamla</option></select></div>
+      <div><label>İstek başına belge</label><input type="number" name="per_request" value="{{ a.per_request }}" min="1" max="100"></div>
+      <div><label>İstek başına en fazla karakter <span class="muted">(0 = otomatik)</span></label><input type="number" name="max_chars" value="{{ a.max_chars }}" min="0" step="1000"></div>
     </div>
-    <label class="check"><input type="checkbox" name="add_to_graph" value="1" checked> Bu belgelerin varlıklarını grafa da ekle</label>
-    <div class="actions"><button {{ 'disabled' if not cfg.labels or not llm.ready }}>Etiketlemeyi başlat</button>
-      <span class="small muted">{{ st.n_docs }} belgenin {{ st.n_docs - st.n_unlabeled }} tanesi etiketli.</span></div>
+    {{ doc_filter(a) }}
+    <div class="grid cols-4">
+      <div><label>Etiketleme modeli <span class="muted">(boş = varsayılan)</span></label><input type="text" name="model" value="{{ a.model }}" placeholder="{{ llm.label }}" {{ 'disabled' if llm.manual }}></div>
+      <div><label>Rastgelelik tohumu</label><input type="number" name="seed" value="{{ a.seed }}" min="0"></div>
+      <div style="grid-column: span 2"><label>&nbsp;</label>
+        <label class="check"><input type="checkbox" name="batch_api" value="1" {{ 'checked' if a.batch_api }} {{ 'disabled' if llm.backend != 'anthropic' }}> Anthropic Batch API (yarı fiyat; sonuç dakikalar–saatler içinde)</label>
+        <label class="check"><input type="checkbox" name="add_to_graph" value="1" {{ 'checked' if a.add_to_graph }}> Bu belgelerin varlıklarını grafa da ekle</label></div>
+    </div>
+    {% if llm.manual %}<p class="small muted">Kopyala–yapıştır modunda her istek bir yapıştırma demek; "istek başına belge"yi artırabilirsin.</p>{% endif %}
+    <div class="actions"><button name="action" value="run" {{ 'disabled' if not cfg.labels or not llm.ready }}>Etiketlemeyi başlat</button>
+      <button name="action" value="save" class="secondary">Yalnızca ayarları kaydet</button>
+      <span class="small muted preview"></span></div>
   </form>
   {% if st.dataset.n_docs %}
   <h3 style="margin-top:16px">Veri seti: {{ st.dataset.n_docs }} belge · {{ st.dataset.n_entities }} varlık geçişi</h3>
@@ -106,29 +135,61 @@
     <a class="btn secondary small-btn" href="/p/{{ p.slug }}/ner/export/dataset.jsonl">Veri setini indir (JSONL)</a>
     <a class="btn secondary small-btn" href="/p/{{ p.slug }}/ner/export/gliner.json">GLiNER eğitim biçiminde indir</a>
     <form class="inline" method="post" action="/p/{{ p.slug }}/ner/clear" onsubmit="return confirm('Veri seti silinsin mi?')">
-      <input type="hidden" name="csrf" value="{{ csrf }}"><button name="what" value="dataset" class="icon" title="Veri setini sil">×</button></form>
+      <input type="hidden" name="csrf" value="{{ csrf }}"><button name="what" value="dataset" class="secondary small-btn">Tümünü sil</button></form>
   </div>
+  <details style="margin-top:10px"><summary>Veri setindeki belgeleri düzenle</summary>
+    <form method="post" action="/p/{{ p.slug }}/ner/dataset/remove" class="row-inline" style="margin:10px 0;align-items:center;flex-wrap:wrap"
+          onsubmit="return confirm('Fazla belgeler rastgele çıkarılsın mı?')">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <span class="small">Veri setini rastgele</span><input type="number" name="keep" min="0" max="{{ st.dataset.n_docs }}" value="{{ st.dataset.n_docs }}" style="flex:0 0 110px">
+      <span class="small">belgeye indir</span><button class="secondary small-btn">Uygula</button></form>
+    <form method="post" action="/p/{{ p.slug }}/ner/dataset/remove">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <div class="table-wrap" style="max-height:50vh;overflow:auto"><table>
+        <tr><th></th><th>Belge</th><th class="num">Varlık</th><th class="num">Doğrulanamayan</th><th>Etiketleyen</th></tr>
+        {% for r in ds_rows %}<tr><td><input type="checkbox" name="doc_id" value="{{ r.doc_id }}" aria-label="Seç"></td>
+          <td><a href="/p/{{ p.slug }}/docs/{{ r.doc_id }}">{{ r.name }}</a></td><td class="num">{{ r.n }}</td><td class="num">{{ r.rejected }}</td>
+          <td class="small muted">{{ r.source }}</td></tr>{% endfor %}
+      </table></div>
+      <div class="actions"><button class="secondary small-btn">Seçilenleri veri setinden çıkar</button>
+        <span class="small muted">Çıkarılan belgeler sonra yeniden etiketlenebilir.</span></div>
+    </form>
+  </details>
   {% endif %}
 </div>
 
 <!-- 3. eğitim -->
+{% set t = ns.train %}
 <div class="card" id="model" style="margin-top:14px">
   <h2 style="margin-top:0">3. Modeli eğit</h2>
-  <p class="small muted">Veri setinin %20'si test için ayrılır; model bu belgelerde dil modelinin etiketleriyle karşılaştırılır.
+  <p class="small muted">Veri setinin bir kısmı test için ayrılır; model bu belgelerde dil modelinin etiketleriyle karşılaştırılır.
     {% if st.gliner %}GLiNER eğitimi CPU'da 200 belge için yaklaşık 15–60 dakika sürebilir ve 4–6 GB bellek ister.{% endif %}</p>
-  <form method="post" action="/p/{{ p.slug }}/ner/train" class="row-inline" style="flex-wrap:wrap;align-items:center">
+  <form method="post" action="/p/{{ p.slug }}/ner/train">
     <input type="hidden" name="csrf" value="{{ csrf }}">
-    <select name="kind" style="width:auto">
-      {% if st.gliner %}<option value="gliner">GLiNER (önerilen)</option>{% endif %}
-      <option value="sozluk">Sözlük modeli (hızlı, bağımlılıksız)</option>
-    </select>
-    {% if st.gliner %}<label class="small" style="margin:0">Tur (epoch) <input type="number" name="epochs" value="5" min="1" max="50" style="width:70px"></label>{% endif %}
-    <button {{ 'disabled' if st.dataset.n_docs < 2 }}>Eğit</button>
+    <div class="grid cols-4">
+      <div><label>Model</label><select name="kind">
+        <option value="auto" {{ 'selected' if t.kind == 'auto' }}>Otomatik ({{ "GLiNER" if st.gliner else "sözlük" }})</option>
+        {% if st.gliner %}<option value="gliner" {{ 'selected' if t.kind == 'gliner' }}>GLiNER</option>{% endif %}
+        <option value="sozluk" {{ 'selected' if t.kind == 'sozluk' }}>Sözlük modeli (hızlı, bağımlılıksız)</option></select></div>
+      <div><label>Test payı</label><select name="test_ratio">
+        {% for r in [0.0, 0.1, 0.15, 0.2, 0.25, 0.3] %}<option value="{{ r }}" {{ 'selected' if (t.test_ratio - r) | abs < 0.001 }}>%{{ (r * 100) | int }}{{ ' (test yok)' if r == 0 }}</option>{% endfor %}</select></div>
+      <div><label>Tur (epoch)</label><input type="number" name="epochs" value="{{ t.epochs }}" min="1" max="100"></div>
+      <div><label>Yığın boyutu (batch)</label><input type="number" name="batch_size" value="{{ t.batch_size }}" min="1" max="128"></div>
+    </div>
+    <details style="margin-top:6px"><summary>Öğrenme oranları (GLiNER)</summary>
+      <div class="grid cols-4">
+        <div><label>Kodlayıcı öğrenme oranı</label><input type="text" name="lr" value="{{ t.lr }}"></div>
+        <div><label>Diğer katmanlar</label><input type="text" name="others_lr" value="{{ t.others_lr }}"></div>
+      </div>
+      <p class="small muted">Varsayılanlar GLiNER ince ayar örneğindeki değerlerdir (5e-6 ve 1e-5). Az veride yükseltmek hızlı ama ezberlemeye açık.</p>
+    </details>
+    <div class="actions"><button name="action" value="run" {{ 'disabled' if st.dataset.n_docs < 2 }}>Eğit</button>
+      <button name="action" value="save" class="secondary">Yalnızca ayarları kaydet</button></div>
   </form>
   {% set m = st.metrics %}
   {% if m.model_kind %}
   <h3 style="margin-top:16px">Mevcut model: {{ "GLiNER" if m.model_kind == "gliner" else "Sözlük modeli" }}
-    <span class="muted small">{{ m.trained_at or m.uploaded_at }}{% if m.base_model %} · temel: {{ m.base_model }}{% endif %}{% if m.n_entries %} · {{ m.n_entries }} ifade{% endif %}</span></h3>
+    <span class="muted small">{{ m.trained_at or m.uploaded_at }}{% if m.base_model %} · temel: {{ m.base_model }}{% endif %}{% if m.epochs %} · {{ m.epochs }} tur{% endif %}{% if m.n_train %} · {{ m.n_train }} eğitim belgesi{% endif %}{% if m.n_entries %} · {{ m.n_entries }} ifade{% endif %}</span></h3>
   {% if m.test %}
   <div class="table-wrap"><table>
     <tr><th>Test ({{ m.n_test }} belge)</th><th class="num">Kesinlik</th><th class="num">Duyarlılık</th><th class="num">F1</th></tr>
@@ -157,18 +218,27 @@
 </div>
 
 <!-- 4. uygulama -->
-<div class="card" style="margin-top:14px">
-  <h2 style="margin-top:0">4. Kalan belgelere uygula</h2>
-  <p class="small muted">Model, etiketlenmemiş belgelerden varlıkları çıkarır ve grafa ekler (dil modeli kullanılmaz, ücretsiz).
+{% set ap = ns.apply %}
+<div class="card" id="apply" style="margin-top:14px">
+  <h2 style="margin-top:0">4. Belgelere uygula</h2>
+  <p class="small muted">Model seçilen belgelerden varlıkları çıkarır ve grafa ekler (dil modeli kullanılmaz, ücretsiz).
     {{ st.n_applied }} belgeye uygulandı.</p>
-  <form method="post" action="/p/{{ p.slug }}/ner/apply" class="row-inline" style="flex-wrap:wrap;align-items:center">
-    <input type="hidden" name="csrf" value="{{ csrf }}">
-    <select name="scope" style="width:auto">
-      <option value="unlabeled">Etiketlenmemiş {{ st.n_unlabeled }} belge</option>
-      <option value="all">Tüm {{ st.n_docs }} belge (dil modeli etiketlerinin üzerine yazar)</option>
-    </select>
-    <label class="small" style="margin:0">Eşik <input type="number" name="threshold" value="{{ cfg.threshold }}" min="0.05" max="0.95" step="0.05" style="width:80px"></label>
-    <button {{ 'disabled' if not st.metrics.model_kind }}>Uygula</button>
+  <form method="post" action="/p/{{ p.slug }}/ner/apply" class="ner-step" data-step="apply">
+    <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="_bools" value="skip_done">
+    <div class="grid cols-4">
+      <div><label>Kapsam</label><select name="scope">
+        <option value="unlabeled" {{ 'selected' if ap.scope == 'unlabeled' }}>Veri setinde olmayanlar ({{ st.n_unlabeled }})</option>
+        <option value="new" {{ 'selected' if ap.scope == 'new' }}>Henüz hiç işlenmemişler</option>
+        <option value="all" {{ 'selected' if ap.scope == 'all' }}>Tüm belgeler (dil modeli etiketlerinin üzerine yazar)</option></select></div>
+      <div><label>En fazla belge <span class="muted">(0 = hepsi)</span></label><input type="number" name="limit" value="{{ ap.limit }}" min="0"></div>
+      <div><label>Eşik</label><input type="number" name="threshold" value="{{ cfg.threshold }}" min="0.05" max="0.95" step="0.05"></div>
+      <div><label>Bir seferde belge</label><input type="number" name="batch_docs" value="{{ ap.batch_docs }}" min="1" max="512"></div>
+    </div>
+    {{ doc_filter(ap) }}
+    <label class="check"><input type="checkbox" name="skip_done" value="1" {{ 'checked' if ap.skip_done }}> Daha önce NER uygulanmış belgeleri atla</label>
+    <div class="actions"><button name="action" value="run" {{ 'disabled' if not st.metrics.model_kind }}>Uygula</button>
+      <button name="action" value="save" class="secondary">Yalnızca ayarları kaydet</button>
+      <span class="small muted preview"></span></div>
   </form>
   {% if st.n_applied or st.dataset.n_docs %}
   <div class="actions">
@@ -192,6 +262,24 @@
     document.getElementById('labelTable').appendChild(tr);
     tr.querySelector('input').focus();
   };
+  // seçime göre kaç belge işleneceğini göster
+  document.querySelectorAll('form.ner-step').forEach(f => {
+    const out = f.querySelector('.preview');
+    let timer = null;
+    const upd = async () => {
+      const q = new URLSearchParams({step: f.dataset.step});
+      ['selection', 'source', 'keyword', 'min_chars', 'n', 'limit', 'scope', 'count_mode'].forEach(k => { if (f.elements[k]) q.set(k, f.elements[k].value); });
+      if (f.elements.skip_done) q.set('skip_done', f.elements.skip_done.checked ? '1' : '0');
+      try {
+        const d = await (await fetch('/api/p/{{ p.slug }}/ner/preview?' + q, {credentials: 'same-origin'})).json();
+        out.textContent = `Bu ayarlarla ${d.will_process} belge işlenecek (uygun: ${d.available}` +
+          (d.in_dataset !== undefined ? `, veri setinde zaten ${d.in_dataset}` : '') + ').';
+      } catch (e) { out.textContent = ''; }
+    };
+    f.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(upd, 300); });
+    f.addEventListener('change', upd);
+    upd();
+  });
   const btn = document.getElementById('tryBtn');
   if (!btn) return;
   const esc = s => String(s).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));

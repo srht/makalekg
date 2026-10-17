@@ -853,7 +853,11 @@ def _ner_job(p: Project, kind: str, title: str, fn) -> RedirectResponse:
 def ner_page(request: Request, slug: str):
     p = get_project(slug)
     cfg = ner.load_config(p)
+    names = {d["id"]: d["filename"] for d in p.documents()}
+    ds_rows = [{"doc_id": r["doc_id"], "name": names.get(r["doc_id"], r["doc_id"]), "n": len(r["entities"]),
+                "rejected": len(r.get("rejected", [])), "source": r.get("source", "")} for r in ner.load_dataset(p)]
     return page(request, "ner.html", **project_ctx(p, "ner"), cfg=cfg, st=ner.status(p), presets=ner.DOMAIN_PRESETS,
+                ns=ner.get_settings(cfg), ds_rows=ds_rows,
                 gmap=ner.gliner_label_map(cfg) if cfg["labels"] else {},
                 matched=ner.match_preset(cfg.get("domain") or "") if cfg.get("domain") else None)
 
@@ -937,39 +941,99 @@ def ner_suggest(request: Request, slug: str, csrf: str = Form(...), domain: str 
     return _ner_job(p, "ner-suggest", "Varlık türü önerisi", run)
 
 
+async def _ner_settings_form(request: Request, p: Project, step: str) -> tuple[str, dict[str, Any]]:
+    """Adım formunu okur, ayarları kaydeder; (eylem, birleşik ayarlar) döndürür. İşaret kutuları için gizli alan
+    "_bools" formdaki tüm kutuların adlarını taşır (işaretsiz kutular forma hiç gelmez)."""
+    form = await request.form()
+    check_csrf(request, str(form.get("csrf", "")))
+    values: dict[str, Any] = {k: v for k, v in form.items() if k not in ("csrf", "action", "_bools")}
+    for k in str(form.get("_bools", "")).split(","):
+        if k:
+            values[k] = k in form
+    merged = ner.update_settings(p, step, values)
+    if "threshold" in form:
+        cfg = ner.load_config(p)
+        try:
+            cfg["threshold"] = min(0.95, max(0.05, float(form["threshold"])))
+            ner.save_config(p, cfg)
+        except ValueError:
+            pass
+    return str(form.get("action", "run")), merged
+
+
 @app.post("/p/{slug}/ner/annotate")
-def ner_annotate(request: Request, slug: str, csrf: str = Form(...), n: int = Form(200), per_request: int = Form(10),
-                 batch_api: str = Form(""), add_to_graph: str = Form("")):
-    check_csrf(request, csrf)
+async def ner_annotate(request: Request, slug: str):
     p = get_project(slug)
+    action, s = await _ner_settings_form(request, p, "annotate")
+    if action == "save":
+        return RedirectResponse(f"/p/{slug}/ner?ok=Ayarlar kaydedildi#annotate", status_code=303)
     if not ner.load_config(p)["labels"]:
         raise HTTPException(400, "Önce varlık türlerini belirle")
-    n, per_request = max(1, min(n, 5000)), max(1, min(per_request, 50))
 
     def run():
         llm = get_llm()
-        use_batch = bool(batch_api) and hasattr(llm, "client")
-        return ner.annotate(p, llm, n=n, per_request=per_request, use_batch_api=use_batch, add_to_graph=bool(add_to_graph))
+        return ner.annotate(p, llm, use_batch_api=bool(s["batch_api"]) and hasattr(llm, "client"))
 
-    return _ner_job(p, "ner-annotate", f"Eğitim verisi: {n} belge dil modeliyle etiketleniyor", run)
+    what = f"toplam {s['n']} belgeye tamamlanıyor" if s["count_mode"] == "total" else f"{s['n']} yeni belge"
+    return _ner_job(p, "ner-annotate", f"Eğitim verisi: {what} dil modeliyle etiketleniyor", run)
 
 
 @app.post("/p/{slug}/ner/train")
-def ner_train(request: Request, slug: str, csrf: str = Form(...), kind: str = Form("auto"), epochs: int = Form(5)):
-    check_csrf(request, csrf)
+async def ner_train(request: Request, slug: str):
     p = get_project(slug)
-    kind = kind if kind in ("auto", "gliner", "sozluk") else "auto"
-    return _ner_job(p, "ner-train", "Varlık modeli eğitiliyor",
-                    lambda: ner.train(p, kind=kind, epochs=max(1, min(epochs, 50))))
+    action, _ = await _ner_settings_form(request, p, "train")
+    if action == "save":
+        return RedirectResponse(f"/p/{slug}/ner?ok=Ayarlar kaydedildi#model", status_code=303)
+    return _ner_job(p, "ner-train", "Varlık modeli eğitiliyor", lambda: ner.train(p))
 
 
 @app.post("/p/{slug}/ner/apply")
-def ner_apply(request: Request, slug: str, csrf: str = Form(...), scope: str = Form("unlabeled"), threshold: float = Form(0.5)):
+async def ner_apply(request: Request, slug: str):
+    p = get_project(slug)
+    action, _ = await _ner_settings_form(request, p, "apply")
+    if action == "save":
+        return RedirectResponse(f"/p/{slug}/ner?ok=Ayarlar kaydedildi#apply", status_code=303)
+    return _ner_job(p, "ner-apply", "Varlık modeli belgelere uygulanıyor", lambda: ner.apply(p))
+
+
+@app.get("/api/p/{slug}/ner/preview")
+def ner_preview(slug: str, step: str = "annotate", selection: str = "", source: str = "", keyword: str = "",
+                min_chars: int = -1, n: int = -1, limit: int = -1, scope: str = "", count_mode: str = "", skip_done: str = ""):
+    """Formdaki seçimle kaç belgenin işleneceğini (kaydetmeden) hesaplar."""
+    p = get_project(slug)
+    if step not in ("annotate", "apply"):
+        raise HTTPException(400)
+    s = ner.get_settings(ner.load_config(p))[step]
+    s.update(ner.clean_settings(step, {k: v for k, v in {"selection": selection, "source": source, "keyword": keyword,
+                                                         "min_chars": min_chars, "n": n, "limit": limit, "scope": scope,
+                                                         "count_mode": count_mode, "skip_done": skip_done or None}.items()
+                                       if v not in ("", -1, None)}))
+    labeled = {r["doc_id"] for r in ner.load_dataset(p)}
+    if step == "annotate":
+        want = max(0, s["n"] - len(labeled)) if s["count_mode"] == "total" else s["n"]
+        ids = ner.select_docs(p, exclude=labeled, selection=s["selection"], source=s["source"], keyword=s["keyword"],
+                              min_chars=s["min_chars"], seed=s["seed"])
+        return {"available": len(ids), "will_process": min(want, len(ids)), "in_dataset": len(labeled)}
+    exclude = set() if s["scope"] == "all" else labeled
+    only = (lambda d: not d.get("ner")) if s["scope"] == "new" or s["skip_done"] else None
+    ids = ner.select_docs(p, exclude=exclude, selection=s["selection"], source=s["source"], keyword=s["keyword"],
+                          min_chars=s["min_chars"], only=only)
+    return {"available": len(ids), "will_process": min(s["limit"], len(ids)) if s["limit"] else len(ids)}
+
+
+@app.post("/p/{slug}/ner/dataset/remove")
+def ner_dataset_remove(request: Request, slug: str, csrf: str = Form(...), doc_id: list[str] = Form([]),
+                       keep: str = Form("")):
     check_csrf(request, csrf)
     p = get_project(slug)
-    ids = [d["id"] for d in p.documents()] if scope == "all" else None
-    th = min(0.95, max(0.05, threshold))
-    return _ner_job(p, "ner-apply", "Varlık modeli belgelere uygulanıyor", lambda: ner.apply(p, ids, threshold=th))
+    if keep.strip():
+        try:
+            n = ner.remove_from_dataset(p, keep=max(0, int(keep)))
+        except ValueError:
+            raise HTTPException(400, "Geçersiz sayı")
+    else:
+        n = ner.remove_from_dataset(p, doc_ids=doc_id)
+    return RedirectResponse(f"/p/{slug}/ner?ok={n} belge veri setinden çıkarıldı#annotate", status_code=303)
 
 
 @app.post("/p/{slug}/ner/clear")
