@@ -30,9 +30,10 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup, escape
+from pydantic import BaseModel
 
-from ..config import ensure_dirs, env, load_dotenv
-from ..llm import get_llm, set_manual_broker
+from ..config import RUNTIME_KEYS, SECRET_KEYS, ensure_dirs, env, load_dotenv, runtime_settings, save_runtime_settings, setting
+from ..llm import DEFAULT_GEMINI_MODEL, get_llm, set_manual_broker
 from ..okg import extractor, ner, oai, search as gsearch, standards, wikidata
 from ..okg.documents import SUPPORTED, UnsupportedFile, extract_text
 from ..okg.ontology import TEMPLATES, EntityType, Ontology, RelationType
@@ -112,13 +113,17 @@ def check_csrf(request: Request, token: str) -> None:
 
 
 def llm_status() -> dict[str, Any]:
-    backend = (env("LLM_BACKEND", "anthropic") or "anthropic").lower()
+    backend = (setting("LLM_BACKEND", "anthropic") or "anthropic").lower()
     if backend == "manual":
         return {"backend": backend, "ready": True, "label": "Kopyala–yapıştır (Claude.ai vb.)", "manual": True}
     if backend == "anthropic":
-        ok = bool(env("ANTHROPIC_API_KEY") or env("ANTHROPIC_AUTH_TOKEN"))
-        return {"backend": backend, "ready": ok, "label": f"Anthropic API · {env('LLM_MODEL', 'claude-opus-5-5')}", "manual": False}
-    return {"backend": backend, "ready": bool(env("OPENAI_COMPAT_BASE_URL")), "label": "Yerel model", "manual": False}
+        ok = bool(setting("ANTHROPIC_API_KEY") or env("ANTHROPIC_AUTH_TOKEN"))
+        return {"backend": backend, "ready": ok, "label": f"Anthropic API · {setting('LLM_MODEL', 'claude-opus-5-5')}", "manual": False}
+    if backend == "gemini":
+        ok = bool(setting("GEMINI_API_KEY") or env("GOOGLE_API_KEY"))
+        return {"backend": backend, "ready": ok, "label": f"Google Gemini · {setting('GEMINI_MODEL', DEFAULT_GEMINI_MODEL)}", "manual": False}
+    return {"backend": backend, "ready": bool(setting("OPENAI_COMPAT_BASE_URL")),
+            "label": f"Yerel / OpenAI uyumlu · {setting('OPENAI_COMPAT_MODEL', 'local-model')}", "manual": False}
 
 
 def page(request: Request, name: str, **ctx) -> HTMLResponse:
@@ -1133,6 +1138,79 @@ def job_api(job_id: str, since: int = 0):
     d["log_len"] = len(job.log)
     d["manual_pending"] = bool(broker.pending and broker.pending.job_id == job_id)
     return JSONResponse(d)
+
+
+# ---------------------------------------------------------------- ayarlar (dil modeli)
+
+
+def _mask(v: str | None) -> str:
+    if not v:
+        return ""
+    return ("•" * 6) + v[-4:] if len(v) > 8 else "•" * len(v)
+
+
+def _settings_view() -> dict[str, Any]:
+    rt = runtime_settings()
+    rows = {}
+    for k in RUNTIME_KEYS:
+        val, from_ui = setting(k), k in rt
+        rows[k] = {"value": "" if k in SECRET_KEYS else (val or ""), "masked": _mask(val) if k in SECRET_KEYS else "",
+                   "set": bool(val), "source": "arayüz" if from_ui else ("ortam" if env(k) else "")}
+    return rows
+
+
+@app.get("/settings", response_class=HTMLResponse)
+def settings_page(request: Request):
+    return page(request, "settings.html", s=_settings_view(), gemini_default=DEFAULT_GEMINI_MODEL)
+
+
+@app.post("/settings")
+async def settings_save(request: Request):
+    form = await request.form()
+    check_csrf(request, str(form.get("csrf", "")))
+    updates: dict[str, str | None] = {}
+    backend = str(form.get("LLM_BACKEND", "")).strip()
+    if backend in ("manual", "anthropic", "gemini", "openai_compat"):
+        updates["LLM_BACKEND"] = backend
+    for k in RUNTIME_KEYS:
+        if k == "LLM_BACKEND" or k not in form:
+            continue
+        v = str(form.get(k, "")).strip()
+        if k in SECRET_KEYS:
+            if form.get(f"clear_{k}"):
+                updates[k] = None
+            elif v:  # boş bırakılan anahtar alanı mevcut anahtarı korur
+                updates[k] = v
+        else:
+            updates[k] = v or None
+    save_runtime_settings(updates)
+    return RedirectResponse("/settings?ok=1", status_code=303)
+
+
+class _Ping(BaseModel):
+    ok: bool
+    model: str
+
+
+@app.post("/api/settings/test")
+async def settings_test(request: Request):
+    data = await request.json()
+    check_csrf(request, str(data.get("csrf", "")))
+    import asyncio
+
+    def run():
+        llm = get_llm()
+        if getattr(llm, "manual", False):
+            return {"ok": True, "message": "Kopyala–yapıştır modu: API gerekmez."}
+        t0 = time.time()
+        out = llm.complete_json("Kısa bir bağlantı testi. Yalnızca istenen JSON'u ver.",
+                                'ok alanını true, model alanını kendi model adın yap.', _Ping)
+        return {"ok": bool(out.ok), "message": f"Yanıt alındı ({time.time() - t0:.1f} sn) · {getattr(llm, 'model_name', '')}"}
+
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(run), timeout=90)
+    except Exception as exc:
+        return {"ok": False, "message": f"{type(exc).__name__}: {str(exc)[:400]}"}
 
 
 @app.get("/manual", response_class=HTMLResponse)

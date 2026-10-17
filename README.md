@@ -88,8 +88,15 @@ CPU'da 200 belgelik eğitim yaklaşık 15–60 dakika sürer ve 4–6 GB bellek 
   basıp Claude.ai gibi bir sohbete yapıştırırsın, yanıtı geri yapıştırırsın. Yanıt şemaya uymazsa hata gösterilir ve
   aynı adım tekrar beklenir. Belge başına genelde **1 kopyala–yapıştır** (uzun belgelerde birkaç). Verilen yanıtlar
   saklanır; aynı istem tekrar sorulmaz.
-- `LLM_BACKEND=anthropic` + `ANTHROPIC_API_KEY`: her şey otomatik.
+- `LLM_BACKEND=anthropic` + `ANTHROPIC_API_KEY`: her şey otomatik. NER etiketlemesinde Message Batches (yarı fiyat) kullanılır.
+- `LLM_BACKEND=gemini` + `GEMINI_API_KEY` (Google AI Studio): her şey otomatik; model `GEMINI_MODEL`
+  (varsayılan `gemini-2.5-flash`). Yapılandırılmış çıktı `responseJsonSchema` ile alınır; 429/5xx'te beklenip yeniden denenir.
+  NER etiketlemesi istek başına birden çok belgeyle yapılır.
 - `LLM_BACKEND=openai_compat` + `OPENAI_COMPAT_BASE_URL`: yerel model sunucusu.
+
+Mod, model ve API anahtarları web arayüzünde sağ üstteki **Ayarlar** (dişli) sayfasından da değiştirilebilir;
+bunlar `data/settings.json`'da (izin 0600) saklanır, ortam değişkenlerinden önce gelir ve yeniden dağıtım gerektirmez.
+Anahtarlar sayfada yalnızca son 4 karakteriyle gösterilir; "Bağlantıyı dene" küçük bir istekle ayarı sınar.
 
 ## Dokploy'da çalıştırma
 

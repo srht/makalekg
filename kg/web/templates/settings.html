@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}Ayarlar{% endblock %}
+{% block content %}
+<h1>Ayarlar: dil modeli</h1>
+<p class="lead">Varlık çıkarımı, ontoloji önerisi ve NER etiketlemesi için hangi dil modelinin kullanılacağını seç.
+  Burada girilenler sunucunun veri klasöründe (<code>data/settings.json</code>, yalnız sunucu okuyabilir) saklanır ve
+  Dokploy'daki ortam değişkenlerinden önce gelir; yeniden dağıtmak gerekmez.</p>
+{% if request.query_params.get("ok") %}<div class="notice good small">Kaydedildi. Yeni işler bu ayarla çalışır.</div>{% endif %}
+
+<form method="post" action="/settings" class="card" autocomplete="off">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <h2 style="margin-top:0">Mod</h2>
+  {% set b = s.LLM_BACKEND.value or "anthropic" %}
+  <div class="grid cols-4 modes">
+    {% for key, title, sub in [("gemini", "Google Gemini", "Gemini API anahtarıyla"),
+                               ("anthropic", "Anthropic (Claude)", "Claude API anahtarıyla; Batch API destekli"),
+                               ("manual", "Kopyala–yapıştır", "API'siz; istemi sohbet arayüzüne sen yapıştırırsın"),
+                               ("openai_compat", "Yerel / OpenAI uyumlu", "vLLM, Ollama, llama.cpp vb.")] %}
+    <label class="card opt-card"><input type="radio" name="LLM_BACKEND" value="{{ key }}" {{ 'checked' if b == key }}>
+      <b>{{ title }}</b><small class="muted">{{ sub }}</small></label>
+    {% endfor %}
+  </div>
+
+  <fieldset class="mode-box" data-mode="gemini">
+    <legend>Google Gemini</legend>
+    <label>API anahtarı {% if s.GEMINI_API_KEY.set %}<span class="badge good">kayıtlı {{ s.GEMINI_API_KEY.masked }} · {{ s.GEMINI_API_KEY.source }}</span>{% endif %}</label>
+    <input type="password" name="GEMINI_API_KEY" placeholder="{{ 'değiştirmek için yeni anahtar yaz' if s.GEMINI_API_KEY.set else 'AIza…' }}" autocomplete="new-password">
+    {% if s.GEMINI_API_KEY.source == "arayüz" %}<label class="check small"><input type="checkbox" name="clear_GEMINI_API_KEY" value="1"> Kayıtlı anahtarı sil</label>{% endif %}
+    <p class="small muted">Anahtarı <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">Google AI Studio</a>'dan alabilirsin.</p>
+    <label>Model</label>
+    <input type="text" name="GEMINI_MODEL" value="{{ s.GEMINI_MODEL.value }}" placeholder="{{ gemini_default }}" list="geminiModels">
+    <datalist id="geminiModels"><option value="gemini-2.5-flash"><option value="gemini-2.5-pro"><option value="gemini-2.5-flash-lite"></datalist>
+    <p class="small muted">Boş = {{ gemini_default }}. Çok sayıda belge için "flash" modelleri hızlı ve ucuzdur; zor metinlerde "pro" daha isabetlidir.</p>
+  </fieldset>
+
+  <fieldset class="mode-box" data-mode="anthropic">
+    <legend>Anthropic (Claude)</legend>
+    <label>API anahtarı {% if s.ANTHROPIC_API_KEY.set %}<span class="badge good">kayıtlı {{ s.ANTHROPIC_API_KEY.masked }} · {{ s.ANTHROPIC_API_KEY.source }}</span>{% endif %}</label>
+    <input type="password" name="ANTHROPIC_API_KEY" placeholder="{{ 'değiştirmek için yeni anahtar yaz' if s.ANTHROPIC_API_KEY.set else 'sk-ant-…' }}" autocomplete="new-password">
+    {% if s.ANTHROPIC_API_KEY.source == "arayüz" %}<label class="check small"><input type="checkbox" name="clear_ANTHROPIC_API_KEY" value="1"> Kayıtlı anahtarı sil</label>{% endif %}
+    <label>Model</label><input type="text" name="LLM_MODEL" value="{{ s.LLM_MODEL.value }}" placeholder="claude-opus-5-5">
+  </fieldset>
+
+  <fieldset class="mode-box" data-mode="openai_compat">
+    <legend>Yerel / OpenAI uyumlu sunucu</legend>
+    <label>Adres</label><input type="url" name="OPENAI_COMPAT_BASE_URL" value="{{ s.OPENAI_COMPAT_BASE_URL.value }}" placeholder="http://ollama:11434/v1">
+    <label>Model</label><input type="text" name="OPENAI_COMPAT_MODEL" value="{{ s.OPENAI_COMPAT_MODEL.value }}">
+    <label>API anahtarı (varsa) {% if s.OPENAI_COMPAT_API_KEY.set %}<span class="badge good">kayıtlı {{ s.OPENAI_COMPAT_API_KEY.masked }}</span>{% endif %}</label>
+    <input type="password" name="OPENAI_COMPAT_API_KEY" autocomplete="new-password">
+  </fieldset>
+
+  <fieldset class="mode-box" data-mode="manual">
+    <legend>Kopyala–yapıştır</legend>
+    <label>Kullandığın sohbet arayüzünün adı (kayıtlarda görünür)</label>
+    <input type="text" name="MANUAL_MODEL_NAME" value="{{ s.MANUAL_MODEL_NAME.value }}" placeholder="claude.ai / gemini.google.com">
+  </fieldset>
+
+  <div class="actions"><button>Kaydet</button>
+    <button type="button" class="secondary" id="testBtn">Bağlantıyı dene</button><span id="testOut" class="small"></span></div>
+  <p class="small muted">"Bağlantıyı dene" kayıtlı ayarla küçük bir istek gönderir (önce kaydet).</p>
+</form>
+{% endblock %}
+{% block scripts %}
+<script>
+(() => {
+  const boxes = document.querySelectorAll('.mode-box');
+  const show = () => { const m = (document.querySelector('input[name=LLM_BACKEND]:checked') || {}).value;
+    boxes.forEach(b => b.hidden = b.dataset.mode !== m); };
+  document.querySelectorAll('input[name=LLM_BACKEND]').forEach(r => r.onchange = show); show();
+  const out = document.getElementById('testOut');
+  document.getElementById('testBtn').onclick = async () => {
+    out.textContent = 'Deneniyor…';
+    try {
+      const d = await (await fetch('/api/settings/test', {method: 'POST', credentials: 'same-origin',
+        headers: {'Content-Type': 'application/json'}, body: JSON.stringify({csrf: {{ csrf | tojson }}})})).json();
+      out.innerHTML = (d.ok ? '<span class="badge good">çalışıyor</span> ' : '<span class="badge bad">hata</span> ') +
+        d.message.replace(/</g, '&lt;');
+    } catch (e) { out.textContent = 'İstek başarısız.'; }
+  };
+})();
+</script>
+{% endblock %}

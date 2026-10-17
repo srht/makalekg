@@ -57,7 +57,7 @@ h3 { font-size: 15px; margin: 0 0 8px; }
 form.inline { display: inline; }
 label { display: block; font-size: 14px; margin: 8px 0 4px; }
 label.check { display: flex; gap: 8px; align-items: flex-start; font-size: 14px; margin: 6px 0; }
-input[type=text], input[type=number], input[type=search], input[type=url], input[type=date], textarea, select, input[type=file] {
+input[type=text], input[type=password], input[type=number], input[type=search], input[type=url], input[type=date], textarea, select, input[type=file] {
   width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--fg); font: inherit;
 }
 textarea { min-height: 110px; resize: vertical; }
@@ -183,3 +183,12 @@ mark { background: color-mix(in srgb, var(--warn) 28%, transparent); color: inhe
 .net-loading { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 10px; align-items: center; justify-content: center;
   color: var(--muted); font-size: 14px; background: var(--surface); border-radius: var(--radius); }
 .net-loading .bar { width: min(260px, 70%); }
+.modes { margin-bottom: 8px; }
+.opt-card { display: flex; flex-direction: column; gap: 2px; cursor: pointer; margin: 0; padding: 12px; }
+.opt-card input { margin: 0 0 4px; width: auto; }
+.opt-card:has(input:checked) { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.mode-box { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 16px 14px; margin: 12px 0 0; }
+.mode-box legend { font-weight: 600; padding: 0 6px; }
+.icon-btn { background: transparent; color: var(--muted); border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; line-height: 0; }
+.icon-btn:hover { color: var(--fg); background: var(--surface-2); }
+.icon-btn svg { width: 17px; height: 17px; }
