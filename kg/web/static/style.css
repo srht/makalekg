@@ -177,3 +177,5 @@ mark { background: color-mix(in srgb, var(--warn) 28%, transparent); color: inhe
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) .theme-btn .sun { display: inline; } :root:not([data-theme="light"]) .theme-btn .moon { display: none; }
 }
+.hit-group { padding: 8px 14px; background: var(--surface-2); border-bottom: 1px solid var(--line); font-size: 13px; font-weight: 600; }
+.hit-group:not(:first-child) { border-top: 1px solid var(--line); }

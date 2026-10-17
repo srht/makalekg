@@ -26,7 +26,8 @@ knowledge graph kuran web uygulaması.
    geldiği** görünür. İki varlık arasındaki bağlantı zincirini bulabilirsin.
    **Ara** sayfası (her proje sayfasının üstündeki kutu da): birkaç kelime yaz, kelimelerin geçtiği ilişkiler
    kaynak cümleleriyle listelenir. Kelimeler varlık adlarında, ilişki adlarında, türlerde ve cümlelerde aranır;
-   büyük/küçük harf, Türkçe karakter ve ek farkı sorun olmaz. Bir varlığa tıklayınca yalnızca onun ilişkileri
+   büyük/küçük harf, Türkçe karakter ve ek farkı sorun olmaz. Birden çok kelimede
+   kelimelerin yan yana geçtiği sonuçlar (ör. "yapay zeka") önce, ayrı ayrı geçtikleri sonra listelenir. Bir varlığa tıklayınca yalnızca onun ilişkileri
    listelenir; sonuçlar CSV olarak indirilebilir (`/api/p/<proje>/search?q=...` JSON verir).
 5. **Açık knowledge graph (Wikidata):** varlıkları Wikidata kayıtlarıyla eşle, sonra eşlenen varlıklar arasında
    Wikidata'nın bildiği ilişkileri (ör. bir ülkenin bir örgüte üyeliği) grafa ekle. Bunlar belgelerden gelenlerden

@@ -55,6 +55,21 @@ def _match(tok: str, ws: list[str]) -> bool:
     return any(_word_match(tok, w) for w in ws)
 
 
+def _phrase(toks: list[str], ws: list[str]) -> bool:
+    """Kelimeler bu sırayla ve yan yana geçiyor mu? ("yapay zeka" → "Yapay Zekâ'nın", "yapay zekası")"""
+    n = len(toks)
+    return any(all(_word_match(t, w) for t, w in zip(toks, ws[i:i + n])) for i in range(len(ws) - n + 1))
+
+
+def _name_level(toks: list[str], ws: list[str]) -> int:
+    """Bir ad için eşleşme düzeyi: 3 ad = sorgu, 2 ad sorguyu öbek olarak içerir, 1 tüm kelimeler adda, 0 değil."""
+    if not toks or not ws:
+        return 0
+    if _phrase(toks, ws):
+        return 3 if len(ws) == len(toks) else 2
+    return 1 if all(_match(t, ws) for t in toks) else 0
+
+
 def spans(text: str, toks: list[str]) -> list[tuple[int, int]]:
     """Metinde vurgulanacak kelime aralıkları."""
     out = []
@@ -81,6 +96,7 @@ def search(graph: dict[str, Any], query: str = "", *, entity: str | None = None,
 
     entity verilirse o varlığın tüm ilişkileri listelenir (sorgu kelimeleri yine süzgeç olarak uygulanır).
     Tüm kelimeleri içeren ilişki yoksa en az birini içerenler gösterilir (partial=True).
+    Her ilişkiye "match" eklenir: phrase (kelimeler yan yana), all (hepsi var, ayrı yerlerde), partial.
     """
     toks = tokenize(query)
     ents = graph.get("entities", {})
@@ -108,7 +124,22 @@ def search(graph: dict[str, Any], query: str = "", *, entity: str | None = None,
                 score += best
         if toks and not hits:
             continue
-        scored.append((hits, score, len(r["sources"]), {**r, "origin": org}))
+        # Birden çok kelimede öbek önceliği: "yapay zeka" araması önce adı/cümlesi "yapay zeka" olanları,
+        # sonra kelimelerin aynı ad/cümlede geçtiklerini, en son kelimeleri farklı yerlerde içerenleri getirir.
+        level = 0
+        if len(toks) > 1 and hits == len(toks):
+            sents = [words(x.get("sentence", "")) for x in r["sources"]]
+            name_lv = max(_name_level(toks, s_name), _name_level(toks, o_name))
+            if name_lv >= 2:
+                level = 3 + name_lv          # 6: ad tam olarak sorgu, 5: ad öbeği içeriyor
+            elif any(_phrase(toks, ws) for ws in [words(r["predicate"])] + sents):
+                level = 4                    # öbek ilişki adında / kaynak cümlede
+            elif name_lv == 1 or any(all(_match(t, ws) for t in toks) for ws in sents):
+                level = 2                    # kelimeler aynı ad ya da cümlede, ama yan yana değil
+            else:
+                level = 1                    # kelimeler ilişkinin farklı yerlerinde
+        match = "partial" if hits < len(toks) else ("phrase" if level >= 4 else "all")
+        scored.append((hits, level, score, len(r["sources"]), {**r, "origin": org, "match": match}))
 
     partial = False
     if toks:
@@ -117,18 +148,17 @@ def search(graph: dict[str, Any], query: str = "", *, entity: str | None = None,
             scored = full
         else:
             partial = True
-    scored.sort(key=lambda x: (-x[0], -x[1], -x[2], ents.get(x[3]["subject"], {}).get("name", "")))
-    relations = [x[3] for x in scored]
+    scored.sort(key=lambda x: (-x[0], -x[1], -x[2], -x[3], ents.get(x[4]["subject"], {}).get("name", "")))
+    relations = [x[4] for x in scored]
 
     entities = []
     if toks and not entity:
         for k, (nw, tw, dw) in ent_words.items():
             hits = sum(1 for t in toks if _match(t, nw) or _match(t, tw))
             if hits:
-                name_hits = sum(1 for t in toks if _match(t, nw))
-                entities.append((hits, name_hits, k))
-        entities.sort(key=lambda x: (-x[0], -x[1], ents[x[2]]["name"]))
-        if any(h == len(toks) for h, _, _ in entities):
+                entities.append((hits, _name_level(toks, nw), sum(1 for t in toks if _match(t, nw)), k))
+        entities.sort(key=lambda x: (-x[0], -x[1], -x[2], ents[x[3]]["name"]))
+        if any(h == len(toks) for h, *_ in entities):
             entities = [x for x in entities if x[0] == len(toks)]
 
     degree: dict[str, int] = {}
@@ -140,6 +170,7 @@ def search(graph: dict[str, Any], query: str = "", *, entity: str | None = None,
         "tokens": toks,
         "partial": partial,
         "total": len(relations),
+        "n_phrase": sum(1 for r in relations if r["match"] == "phrase"),
         "relations": relations[:limit],
-        "entities": [{**ents[k], "key": k, "degree": degree.get(k, 0)} for _, _, k in entities[:12]],
+        "entities": [{**ents[k], "key": k, "degree": degree.get(k, 0)} for *_, k in entities[:12]],
     }

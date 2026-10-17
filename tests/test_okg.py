@@ -249,3 +249,22 @@ def test_search_relations():
     assert len(search(g, "", entity=key)["relations"]) == 2
     assert [r["predicate"] for r in search(g, "ankara", origin="metadata")["relations"]] == ["BULUNUR"]
     assert search(g, "olmayankelime")["total"] == 0
+
+
+def test_search_phrase_first():
+    from kg.okg.search import search
+    k = lambda t, n: f"{t}::{n.casefold()}"
+    ents = {k("Konu", n): {"name": n, "type": "Konu", "description": None, "mentions": []}
+            for n in ["Yapay Sinir Ağları", "Yapay Zekâ", "Sağlık", "Zeka Testi", "Yapay Zeka Etiği"]}
+    def rel(s, p, o, sent):
+        return {"id": p, "subject": k("Konu", s), "predicate": p, "object": k("Konu", o),
+                "sources": [{"doc_id": "d", "sentence": sent, "confidence": 1}]}
+    rels = [rel("Yapay Sinir Ağları", "ILGILI1", "Zeka Testi", "Yapay sinir ağları ile zeka testi."),  # dağınık
+            rel("Sağlık", "ILGILI2", "Yapay Sinir Ağları", "Sağlıkta yapay zekanın alt dalı sinir ağlarıdır."),  # cümlede öbek
+            rel("Yapay Zeka Etiği", "ILGILI3", "Sağlık", "Etik."),  # ad öbeği içeriyor
+            rel("Yapay Zekâ", "ILGILI4", "Sağlık", "Sağlık alanında kullanılır.")]  # ad tam olarak sorgu
+    g = {"entities": ents, "relations": {r["id"]: r for r in rels}}
+    res = search(g, "yapay zeka")
+    assert [r["predicate"] for r in res["relations"]] == ["ILGILI4", "ILGILI3", "ILGILI2", "ILGILI1"]
+    assert [r["match"] for r in res["relations"]] == ["phrase", "phrase", "phrase", "all"] and res["n_phrase"] == 3
+    assert [e["name"] for e in res["entities"]][:2] == ["Yapay Zekâ", "Yapay Zeka Etiği"]

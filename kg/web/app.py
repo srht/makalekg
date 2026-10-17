@@ -531,7 +531,7 @@ def _search(p: Project, q: str, entity: str, origin: str, limit: int) -> dict[st
     rows = []
     for r in res["relations"]:
         s, o = ents.get(r["subject"], {}), ents.get(r["object"], {})
-        rows.append({"id": r["id"], "predicate": r["predicate"], "origin": r["origin"],
+        rows.append({"id": r["id"], "predicate": r["predicate"], "origin": r["origin"], "match": r["match"],
                      "subject": {"key": r["subject"], "name": s.get("name", r["subject"]), "type": s.get("type", "")},
                      "object": {"key": r["object"], "name": o.get("name", r["object"]), "type": o.get("type", "")},
                      "sources": [{"doc": _source_name(docs, x["doc_id"]),
@@ -540,6 +540,7 @@ def _search(p: Project, q: str, entity: str, origin: str, limit: int) -> dict[st
     entities = [{"key": e["key"], "name": e["name"], "type": e["type"], "description": e.get("description"),
                  "degree": e["degree"]} for e in res["entities"]]
     return {"query": q, "tokens": res["tokens"], "partial": res["partial"], "total": res["total"],
+            "n_phrase": res["n_phrase"],
             "entity": ({"key": entity, "name": ents[entity]["name"], "type": ents[entity]["type"]} if entity else None),
             "relations": rows, "entities": entities}
 

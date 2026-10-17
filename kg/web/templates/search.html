@@ -7,7 +7,8 @@
 <h1>Grafta ara</h1>
 <p class="lead">Birkaç kelime yaz: bu kelimelerin geçtiği <b>ilişkiler</b> kaynak cümleleriyle birlikte listelenir.
   Kelimeler varlık adlarında, ilişki adlarında, türlerde ve kaynak cümlelerde aranır; ekler sorun olmaz
-  (<i>ankara</i> → <i>Ankara'da</i>).</p>
+  (<i>ankara</i> → <i>Ankara'da</i>). Birden çok kelime yazınca kelimelerin yan yana geçtiği sonuçlar
+  (<i>yapay zeka</i>) önce gelir.</p>
 
 <form class="card searchbar" method="get" action="/p/{{ p.slug }}/search" role="search">
   <input type="search" name="q" value="{{ q }}" placeholder="ör. yapay zeka sağlık" autofocus aria-label="Aranacak kelimeler">
@@ -61,7 +62,12 @@
 
 {% if res.relations %}
 <div class="card hits" style="padding:0">
+  {% set grouped = res.tokens | length > 1 and not res.partial %}
   {% for r in res.relations %}
+  {% if grouped and (loop.first or loop.previtem.match != r.match) %}
+  <div class="hit-group">{% if r.match == "phrase" %}“{{ q }}” geçenler <span class="muted">({{ res.n_phrase }})</span>
+    {%- else %}Kelimeleri ayrı ayrı içerenler <span class="muted">({{ res.total - res.n_phrase }})</span>{% endif %}</div>
+  {% endif %}
   <div class="hit">
     <div class="triple">
       <a class="ent" href="/p/{{ p.slug }}/search?{{ dict(entity=r.subject.key, origin=origin) | urlencode }}" title="{{ r.subject.name }} ilişkilerini listele">{{ hl(r.subject.name) }}</a>
