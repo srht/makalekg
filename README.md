@@ -47,6 +47,30 @@ geçmeyen **reddedilir** (belge sayfasında sebebiyle görünür):
 Aynı ad ve türdeki varlıklar belgeler arasında tek düğümde birleşir. Bir belge yeniden işlendiğinde önce o belgenin
 katkıları silinir, çift kayıt oluşmaz.
 
+## Hızlı varlık modeli (GLiNER) — çok sayıda kayıt için
+
+Binlerce DSpace kaydını tek tek dil modeline göndermek yerine (Belgeler → "Hızlı varlık modeli"):
+
+1. **Varlık türleri:** alanı yaz (ör. "elektrik") → hazır tipik türler gelir (elektrik, bilgisayar, tıp, hukuk,
+   uluslararası ilişkiler, eğitim, ekonomi, inşaat, genel) ya da dil modelinden öneri istenir. Liste düzenlenebilir.
+2. **Eğitim verisi:** N belge (varsayılan 200) gruplar hâlinde dil modeline gönderilir (istek başına ~10 kayıt).
+   Anthropic API'de **Message Batches** kullanılır (standart fiyatın yarısı; paket kimliği saklanır, iş yarıda kalırsa
+   aynı paket beklenir). Model varlıkları metindeki yazılışıyla döndürür; sistem her geçişin karakter aralığını
+   metinde birebir doğrular (bulunamayan öneriler atılır). Veri seti `ner/dataset.jsonl` olarak saklanır,
+   JSONL veya GLiNER eğitim biçiminde indirilebilir.
+3. **Eğitim:** [GLiNER](https://github.com/urchade/GLiNER) (`urchade/gliner_multi-v2.1`, çok dilli, Apache-2.0)
+   veri setiyle ince ayarlanır. Veri setinin %20'si testte kullanılır; eğitimsiz temel model ile eğitilmiş model
+   aynı test belgelerinde kesinlik/duyarlılık/F1 ile karşılaştırılır. GLiNER kurulu değilse bağımlılıksız
+   **sözlük modeli** eğitilir (görülen ifadeleri tanır, yeni adları genelleyemez). GPU'da eğitmek için:
+   `scripts/train_gliner.py` + arayüzden model .zip yükleme.
+4. **Uygulama:** model etiketlenmemiş belgelerin hepsinden varlık çıkarır (dil modeli yok, ücretsiz). Varlıklar grafa
+   `<belge>#ner` katkısı olarak yazılır ve arşiv kaydının Yayın düğümüne `BAHSEDER` ilişkisiyle bağlanır.
+
+Komut satırı: `python -m kg.okg.ner_cli run <proje> --domain elektrik --n 200` (ayrıca `labels`, `annotate`,
+`train`, `apply`, `status`). Docker imajı GLiNER'i (torch CPU) `WITH_GLINER=1` ile kurar (varsayılan; imaja ~1 GB ekler,
+`WITH_GLINER=0` ile kapatılır). Temel model ilk kullanımda Hugging Face'ten indirilir ve `data/hf` altında kalır.
+CPU'da 200 belgelik eğitim yaklaşık 15–60 dakika sürer ve 4–6 GB bellek ister; eğitim sırasında diğer işler sırada bekler.
+
 ## Dil modeli: API'siz (kopyala–yapıştır) veya API
 
 - `LLM_BACKEND=manual` (varsayılan): API gerekmez. Sistem modele gidecek metni (istem) gösterir; "İstemi kopyala"ya
@@ -94,6 +118,9 @@ kg/okg/store.py       proje deposu (data/projects/<proje>/), belge katkılarıyl
 kg/okg/wikidata.py    Wikidata eşleme ve zenginleştirme
 kg/okg/oai.py         OAI-PMH istemcisi (DSpace oai_dc, ORE tam metin), metadata grafı
 kg/okg/search.py      grafta kelime araması (ilişki/varlık puanlama, vurgulama)
+kg/okg/ner.py         hızlı varlık modeli: alan önerileri, dil modeliyle etiketleme (Batch API), GLiNER/sözlük eğitimi, uygulama
+kg/okg/ner_cli.py     aynı boru hattının komut satırı
+scripts/train_gliner.py  GLiNER'i GPU'lu bir makinede eğitmek için bağımsız betik
 kg/web/               FastAPI arayüzü, iş kuyruğu, kopyala–yapıştır aracısı, şablonlar
 kg/web/static/vendor/ vis-network 9.1.9 (MIT/Apache-2.0; CDN'e bağımlı olmamak için depoda)
 ```

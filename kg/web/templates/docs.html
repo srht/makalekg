@@ -50,6 +50,12 @@
   </form>
 </details>
 
+<div class="card" style="margin-top:12px">
+  <div class="row-between"><div><b>Çok sayıda kayıt mı var?</b> <span class="small muted">Bir kısmını dil modeline etiketlet, hızlı bir
+    varlık modeli (GLiNER) eğit, kalanların hepsine ücretsiz uygula.</span></div>
+    <a class="btn secondary small-btn" href="/p/{{ p.slug }}/ner">Hızlı varlık modeli →</a></div>
+</div>
+
 {% if docs %}
 <div class="row-between" style="margin-top:22px">
   <h2 style="margin:0">Yüklenen belgeler</h2>
@@ -68,7 +74,8 @@
   {% for d in docs %}
   <tr data-id="{{ d.id }}">
     <td><a href="/p/{{ p.slug }}/docs/{{ d.id }}">{{ d.filename }}</a><div class="small muted">{{ "{:,}".format(d.chars) }} karakter
-      {% if d.source %}· <span class="badge">arşiv</span>{% if d.source.fulltext %} <span class="badge good">tam metin</span>{% endif %}{% endif %}</div></td>
+      {% if d.source %}· <span class="badge">arşiv</span>{% if d.source.fulltext %} <span class="badge good">tam metin</span>{% endif %}{% endif %}
+      {% if d.ner %}· <span class="badge hyp" title="Varlık modeli: {{ 'dil modeli etiketi' if d.ner == 'llm' else 'eğitilmiş model' }}">NER {{ d.n_ner }}</span>{% endif %}</div></td>
     <td class="st">{% include "_docstatus.html" %}</td>
     <td class="num">{{ d.n_entities if d.status == "done" else "—" }}</td>
     <td class="num">{{ d.n_relations if d.status == "done" else "—" }}</td>

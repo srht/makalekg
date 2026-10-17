@@ -33,7 +33,7 @@ from markupsafe import Markup, escape
 
 from ..config import ensure_dirs, env, load_dotenv
 from ..llm import get_llm, set_manual_broker
-from ..okg import extractor, oai, search as gsearch, standards, wikidata
+from ..okg import extractor, ner, oai, search as gsearch, standards, wikidata
 from ..okg.documents import SUPPORTED, UnsupportedFile, extract_text
 from ..okg.ontology import TEMPLATES, EntityType, Ontology, RelationType
 from ..okg.store import Project, create_project, list_projects
@@ -410,7 +410,7 @@ def doc_page(request: Request, slug: str, doc_id: str):
     if doc is None:
         raise HTTPException(404)
     g = p.graph()
-    ids = {doc_id, doc_id + oai.META_SUFFIX}
+    ids = {doc_id, doc_id + oai.META_SUFFIX, doc_id + ner.NER_SUFFIX}
     ents = [e for e in g["entities"].values() if any(m["doc_id"] in ids for m in e["mentions"])]
     rels = []
     for r in g["relations"].values():
@@ -495,6 +495,8 @@ def _source_name(docs: dict[str, str], doc_id: str) -> str:
         return "Wikidata"
     if doc_id.endswith(oai.META_SUFFIX):
         return docs.get(doc_id[:-len(oai.META_SUFFIX)], doc_id) + " (arşiv metadata)"
+    if doc_id.endswith(ner.NER_SUFFIX):
+        return docs.get(doc_id[:-len(ner.NER_SUFFIX)], doc_id) + " (varlık modeli)"
     return docs.get(doc_id, doc_id)
 
 
@@ -652,7 +654,7 @@ def _search(p: Project, q: str, entity: str, origin: str, limit: int) -> dict[st
                      "subject": {"key": r["subject"], "name": s.get("name", r["subject"]), "type": s.get("type", "")},
                      "object": {"key": r["object"], "name": o.get("name", r["object"]), "type": o.get("type", "")},
                      "sources": [{"doc": _source_name(docs, x["doc_id"]),
-                                  "doc_id": x["doc_id"].removesuffix(oai.META_SUFFIX) if x["doc_id"] != wikidata.WIKIDATA_SOURCE else "",
+                                  "doc_id": x["doc_id"].removesuffix(oai.META_SUFFIX).removesuffix(ner.NER_SUFFIX) if x["doc_id"] != wikidata.WIKIDATA_SOURCE else "",
                                   "sentence": x.get("sentence", ""), "confidence": x.get("confidence")} for x in r["sources"]]})
     entities = [{"key": e["key"], "name": e["name"], "type": e["type"], "description": e.get("description"),
                  "degree": e["degree"]} for e in res["entities"]]
@@ -836,6 +838,170 @@ def _turtle(p: Project) -> str:
 
 
 # ---------------------------------------------------------------- işler ve elle yanıt
+
+
+# ---------------------------------------------------------------- hızlı varlık modeli (NER)
+
+
+def _ner_job(p: Project, kind: str, title: str, fn) -> RedirectResponse:
+    nxt = f"/p/{p.slug}/ner"
+    job = jobs.submit(kind, title, {"slug": p.slug, "next": nxt}, fn)
+    return RedirectResponse(f"/jobs/{job.id}?next={nxt}", status_code=303)
+
+
+@app.get("/p/{slug}/ner", response_class=HTMLResponse)
+def ner_page(request: Request, slug: str):
+    p = get_project(slug)
+    cfg = ner.load_config(p)
+    return page(request, "ner.html", **project_ctx(p, "ner"), cfg=cfg, st=ner.status(p), presets=ner.DOMAIN_PRESETS,
+                matched=ner.match_preset(cfg.get("domain") or "") if cfg.get("domain") else None)
+
+
+@app.post("/p/{slug}/ner/labels")
+def ner_labels(request: Request, slug: str, csrf: str = Form(...), name: list[str] = Form([]), desc: list[str] = Form([]),
+               threshold: float = Form(0.5), base_model: str = Form("")):
+    check_csrf(request, csrf)
+    p = get_project(slug)
+    cfg = ner.load_config(p)
+    cfg["labels"] = [{"name": n, "description": desc[i] if i < len(desc) else ""} for i, n in enumerate(name)]
+    cfg["threshold"] = min(0.95, max(0.05, threshold))
+    if base_model.strip():
+        cfg["base_model"] = base_model.strip()
+    ner.save_config(p, cfg)
+    return RedirectResponse(f"/p/{slug}/ner#labels", status_code=303)
+
+
+@app.post("/p/{slug}/ner/suggest")
+def ner_suggest(request: Request, slug: str, csrf: str = Form(...), domain: str = Form(""), how: str = Form("preset"),
+                preset: str = Form("")):
+    check_csrf(request, csrf)
+    p = get_project(slug)
+    cfg = ner.load_config(p)
+    cfg["domain"] = domain.strip()[:200]
+    key = preset if preset in ner.DOMAIN_PRESETS else ner.match_preset(domain)
+    if how == "preset":
+        if not key:
+            ner.save_config(p, cfg)
+            return RedirectResponse(f"/p/{slug}/ner?err=" + "Bu alan için hazır liste yok; 'Dil modeline sor'u dene veya listeden seç.", status_code=303)
+        cfg["labels"] = [{"name": n, "description": d} for n, d in ner.DOMAIN_PRESETS[key]["labels"]]
+        ner.save_config(p, cfg)
+        return RedirectResponse(f"/p/{slug}/ner#labels", status_code=303)
+    if not domain.strip():
+        raise HTTPException(400, "Alan adını yaz (ör. elektrik mühendisliği)")
+    ner.save_config(p, cfg)
+    sample = "\n\n".join(p.text(d["id"])[:1500] for d in p.documents()[:5])
+
+    def run():
+        labels = ner.suggest_labels(get_llm(), domain.strip(), sample)
+        c = ner.load_config(p)
+        c["labels"] = [{"name": l.name, "description": l.description or ""} for l in labels]
+        ner.save_config(p, c)
+        return {"labels": len(labels)}
+
+    return _ner_job(p, "ner-suggest", "Varlık türü önerisi", run)
+
+
+@app.post("/p/{slug}/ner/annotate")
+def ner_annotate(request: Request, slug: str, csrf: str = Form(...), n: int = Form(200), per_request: int = Form(10),
+                 batch_api: str = Form(""), add_to_graph: str = Form("")):
+    check_csrf(request, csrf)
+    p = get_project(slug)
+    if not ner.load_config(p)["labels"]:
+        raise HTTPException(400, "Önce varlık türlerini belirle")
+    n, per_request = max(1, min(n, 5000)), max(1, min(per_request, 50))
+
+    def run():
+        llm = get_llm()
+        use_batch = bool(batch_api) and hasattr(llm, "client")
+        return ner.annotate(p, llm, n=n, per_request=per_request, use_batch_api=use_batch, add_to_graph=bool(add_to_graph))
+
+    return _ner_job(p, "ner-annotate", f"Eğitim verisi: {n} belge dil modeliyle etiketleniyor", run)
+
+
+@app.post("/p/{slug}/ner/train")
+def ner_train(request: Request, slug: str, csrf: str = Form(...), kind: str = Form("auto"), epochs: int = Form(5)):
+    check_csrf(request, csrf)
+    p = get_project(slug)
+    kind = kind if kind in ("auto", "gliner", "sozluk") else "auto"
+    return _ner_job(p, "ner-train", "Varlık modeli eğitiliyor",
+                    lambda: ner.train(p, kind=kind, epochs=max(1, min(epochs, 50))))
+
+
+@app.post("/p/{slug}/ner/apply")
+def ner_apply(request: Request, slug: str, csrf: str = Form(...), scope: str = Form("unlabeled"), threshold: float = Form(0.5)):
+    check_csrf(request, csrf)
+    p = get_project(slug)
+    ids = [d["id"] for d in p.documents()] if scope == "all" else None
+    th = min(0.95, max(0.05, threshold))
+    return _ner_job(p, "ner-apply", "Varlık modeli belgelere uygulanıyor", lambda: ner.apply(p, ids, threshold=th))
+
+
+@app.post("/p/{slug}/ner/clear")
+def ner_clear(request: Request, slug: str, csrf: str = Form(...), what: str = Form(...)):
+    check_csrf(request, csrf)
+    p = get_project(slug)
+    d = ner.ner_dir(p)
+    if what == "dataset":
+        (d / "dataset.jsonl").unlink(missing_ok=True)
+        (d / "state.json").unlink(missing_ok=True)
+    elif what == "graph":
+        ner.clear_ner(p)
+        p.sync_neo4j()
+    elif what == "model":
+        import shutil
+        shutil.rmtree(d / "model", ignore_errors=True)
+        for f in ("gazetteer.json", "metrics.json"):
+            (d / f).unlink(missing_ok=True)
+    return RedirectResponse(f"/p/{slug}/ner", status_code=303)
+
+
+@app.post("/p/{slug}/ner/model-upload")
+async def ner_model_upload(request: Request, slug: str, csrf: str = Form(...), file: UploadFile = File(...)):
+    check_csrf(request, csrf)
+    p = get_project(slug)
+    data = await file.read()
+    try:
+        ner.install_model_zip(p, data)
+    except (ValueError, OSError) as exc:
+        return RedirectResponse(f"/p/{slug}/ner?err={exc}", status_code=303)
+    except Exception:
+        return RedirectResponse(f"/p/{slug}/ner?err=Zip açılamadı", status_code=303)
+    return RedirectResponse(f"/p/{slug}/ner#model", status_code=303)
+
+
+@app.post("/api/p/{slug}/ner/try")
+async def ner_try(request: Request, slug: str):
+    p = get_project(slug)
+    data = await request.json()
+    check_csrf(request, str(data.get("csrf", "")))
+    text = str(data.get("text", ""))[:20000]
+    model = ner.trained_model(p)
+    if model is None:
+        raise HTTPException(400, "Henüz eğitilmiş model yok")
+    cfg = ner.load_config(p)
+    import asyncio
+    preds = await asyncio.to_thread(model.predict, [text], ner.label_names(cfg), float(cfg.get("threshold", 0.5)))
+    return {"entities": preds[0]}
+
+
+@app.get("/p/{slug}/ner/export/{fmt}")
+def ner_export(slug: str, fmt: str):
+    p = get_project(slug)
+    rows = ner.load_dataset(p)
+    if fmt == "dataset.jsonl":
+        body = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
+        return Response(body, media_type="application/x-ndjson",
+                        headers={"Content-Disposition": f'attachment; filename="{slug}-ner-dataset.jsonl"'})
+    if fmt == "gliner.json":
+        cfg = ner.load_config(p)
+        train_rows, test_rows = ner.split_dataset(rows)
+        body = json.dumps({"labels": ner.label_names(cfg),
+                           "train": [ex for r in train_rows for ex in ner.to_gliner(r["text"], r["entities"])],
+                           "test": [ex for r in test_rows for ex in ner.to_gliner(r["text"], r["entities"])]},
+                          ensure_ascii=False)
+        return Response(body, media_type="application/json",
+                        headers={"Content-Disposition": f'attachment; filename="{slug}-gliner-train.json"'})
+    raise HTTPException(404)
 
 
 @app.get("/jobs/{job_id}", response_class=HTMLResponse)

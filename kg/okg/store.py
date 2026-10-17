@@ -174,6 +174,7 @@ class Project:
         with self.lock:
             self.remove_contributions(doc_id)
             self.remove_contributions(doc_id + "#meta")  # arşiv metadata grafı
+            self.remove_contributions(doc_id + "#ner")  # varlık modeli (NER)
             self._save_documents([d for d in self.documents() if d["id"] != doc_id])
             for f in list((self.dir / "files").glob(f"{doc_id}.*")) + [self.dir / "texts" / f"{doc_id}.txt"]:
                 f.unlink(missing_ok=True)

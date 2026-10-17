@@ -1,0 +1,3 @@
+# Hızlı varlık modeli (GLiNER). torch ayrıca kurulur (Dockerfile'da CPU sürümü).
+gliner==0.2.29
+accelerate>=0.26

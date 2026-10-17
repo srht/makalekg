@@ -1,0 +1,182 @@
+{% extends "base.html" %}
+{% block title %}Hızlı varlık modeli — {{ meta.name }}{% endblock %}
+{% block content %}
+<h1>Hızlı varlık modeli</h1>
+<p class="lead">Binlerce arşiv kaydını tek tek dil modeline göndermek pahalı ve yavaş. Bunun yerine: bir kısmını
+  (ör. 200 kayıt) dil modeline etiketletip bir <b>eğitim veri seti</b> oluştur, bununla küçük ve hızlı bir model
+  ({% if st.gliner %}<b>GLiNER</b>{% else %}sözlük modeli{% endif %}) eğit, sonra kalan kayıtların hepsinden bu modelle varlık çıkar.</p>
+
+{% if request.query_params.get("err") %}<div class="notice bad">{{ request.query_params.get("err") }}</div>{% endif %}
+{% if not st.gliner %}
+<div class="notice small">GLiNER bu sunucuda kurulu değil; eğitimde <b>sözlük modeli</b> kullanılır (veri setinde görülen ifadeleri tanır,
+  yeni adları genelleyemez). GLiNER için Docker imajını <code>WITH_GLINER=1</code> ile kur (varsayılan) veya
+  modeli başka makinede eğitip aşağıdan .zip olarak yükle.</div>
+{% endif %}
+
+<!-- 1. etiketler -->
+<div class="card" id="labels" style="margin-top:14px">
+  <h2 style="margin-top:0">1. Varlık türleri</h2>
+  <p class="small muted">Alanını yaz: o alandaki tipik varlık türleri önerilir. Sonra listeyi düzenleyebilirsin.</p>
+  <form method="post" action="/p/{{ p.slug }}/ner/suggest" class="row-inline" style="flex-wrap:wrap">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="text" name="domain" value="{{ cfg.domain }}" placeholder="ör. elektrik mühendisliği" style="flex:1 1 240px">
+    <select name="preset" style="width:auto" aria-label="Hazır liste">
+      <option value="">alana göre otomatik seç</option>
+      {% for key, pr in presets.items() %}<option value="{{ key }}">{{ pr.title }}</option>{% endfor %}
+    </select>
+    <button name="how" value="preset" class="secondary">Hazır öneriyi getir</button>
+    <button name="how" value="llm" class="secondary" {{ 'disabled' if not llm.ready }}>Dil modeline sor</button>
+  </form>
+
+  <form method="post" action="/p/{{ p.slug }}/ner/labels" style="margin-top:14px">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <div class="table-wrap"><table id="labelTable">
+      <tr><th style="width:28%">Tür</th><th>Açıklama ve örnekler (modelin ne arayacağını anlaması için)</th><th></th></tr>
+      {% for l in cfg.labels %}
+      <tr><td><input type="text" name="name" value="{{ l.name }}"></td><td><input type="text" name="desc" value="{{ l.description }}"></td>
+        <td><button type="button" class="icon" onclick="this.closest('tr').remove()" title="Sil">×</button></td></tr>
+      {% endfor %}
+    </table></div>
+    <div class="actions">
+      <button type="button" class="secondary small-btn" id="addLabel">+ tür ekle</button>
+      <label class="small" style="margin:0">Eşik <input type="number" name="threshold" value="{{ cfg.threshold }}" min="0.05" max="0.95" step="0.05" style="width:80px"></label>
+      {% if st.gliner %}<label class="small" style="margin:0">Temel GLiNER modeli <input type="text" name="base_model" value="{{ cfg.base_model }}" style="width:260px"></label>{% endif %}
+      <button>Kaydet</button>
+    </div>
+    <p class="small muted">Eşik: modelin bir varlığı kabul etmesi için gereken güven (yüksek = daha az ama daha kesin sonuç).
+      Türler ontolojiye de eklenir; varlıklar arşiv kaydına <span class="pred">BAHSEDER</span> ilişkisiyle bağlanır.</p>
+  </form>
+</div>
+
+<!-- 2. veri seti -->
+<div class="card" style="margin-top:14px">
+  <h2 style="margin-top:0">2. Eğitim verisi (dil modeliyle etiketleme)</h2>
+  {% if st.pending_batch %}<div class="notice small">Anthropic'e gönderilmiş bir paket sonuç bekliyor (<code>{{ st.pending_batch }}</code>).
+    Aşağıdan yeniden başlatırsan aynı paketin sonucu beklenir, yeniden ücretlendirilmez.</div>{% endif %}
+  <p class="small muted">Seçilen belgeler gruplar hâlinde dil modeline gönderilir (bir istekte birden çok belge). Model varlıkları
+    metinde geçtiği biçimiyle döndürür; sistem metinde birebir doğrulayıp her geçişin yerini işaretler. Zaten etiketli belgeler atlanır.</p>
+  <form method="post" action="/p/{{ p.slug }}/ner/annotate">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <div class="grid cols-3">
+      <div><label>Kaç belge</label><input type="number" name="n" value="{{ [200, st.n_unlabeled] | min if st.n_unlabeled else 200 }}" min="1" max="5000"></div>
+      <div><label>İstek başına belge</label><input type="number" name="per_request" value="10" min="1" max="50"></div>
+      <div><label>&nbsp;</label>
+        {% if llm.backend == "anthropic" %}<label class="check"><input type="checkbox" name="batch_api" value="1" checked> Anthropic Batch API (yarı fiyat; sonuç dakikalar–saatler içinde)</label>
+        {% elif llm.manual %}<p class="small muted" style="margin:0">Kopyala–yapıştır modunda her istek bir yapıştırma demek; "istek başına belge"yi artırabilirsin.</p>{% endif %}
+      </div>
+    </div>
+    <label class="check"><input type="checkbox" name="add_to_graph" value="1" checked> Bu belgelerin varlıklarını grafa da ekle</label>
+    <div class="actions"><button {{ 'disabled' if not cfg.labels or not llm.ready }}>Etiketlemeyi başlat</button>
+      <span class="small muted">{{ st.n_docs }} belgenin {{ st.n_docs - st.n_unlabeled }} tanesi etiketli.</span></div>
+  </form>
+  {% if st.dataset.n_docs %}
+  <h3 style="margin-top:16px">Veri seti: {{ st.dataset.n_docs }} belge · {{ st.dataset.n_entities }} varlık geçişi</h3>
+  <div class="ent-chips">{% for l, c in st.dataset.by_label.items() %}<span class="chip">{{ l }} <span class="muted">{{ c }}</span></span>{% endfor %}</div>
+  <div class="actions">
+    <a class="btn secondary small-btn" href="/p/{{ p.slug }}/ner/export/dataset.jsonl">Veri setini indir (JSONL)</a>
+    <a class="btn secondary small-btn" href="/p/{{ p.slug }}/ner/export/gliner.json">GLiNER eğitim biçiminde indir</a>
+    <form class="inline" method="post" action="/p/{{ p.slug }}/ner/clear" onsubmit="return confirm('Veri seti silinsin mi?')">
+      <input type="hidden" name="csrf" value="{{ csrf }}"><button name="what" value="dataset" class="icon" title="Veri setini sil">×</button></form>
+  </div>
+  {% endif %}
+</div>
+
+<!-- 3. eğitim -->
+<div class="card" id="model" style="margin-top:14px">
+  <h2 style="margin-top:0">3. Modeli eğit</h2>
+  <p class="small muted">Veri setinin %20'si test için ayrılır; model bu belgelerde dil modelinin etiketleriyle karşılaştırılır.
+    {% if st.gliner %}GLiNER eğitimi CPU'da 200 belge için yaklaşık 15–60 dakika sürebilir ve 4–6 GB bellek ister.{% endif %}</p>
+  <form method="post" action="/p/{{ p.slug }}/ner/train" class="row-inline" style="flex-wrap:wrap;align-items:center">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <select name="kind" style="width:auto">
+      {% if st.gliner %}<option value="gliner">GLiNER (önerilen)</option>{% endif %}
+      <option value="sozluk">Sözlük modeli (hızlı, bağımlılıksız)</option>
+    </select>
+    {% if st.gliner %}<label class="small" style="margin:0">Tur (epoch) <input type="number" name="epochs" value="5" min="1" max="50" style="width:70px"></label>{% endif %}
+    <button {{ 'disabled' if st.dataset.n_docs < 2 }}>Eğit</button>
+  </form>
+  {% set m = st.metrics %}
+  {% if m.model_kind %}
+  <h3 style="margin-top:16px">Mevcut model: {{ "GLiNER" if m.model_kind == "gliner" else "Sözlük modeli" }}
+    <span class="muted small">{{ m.trained_at or m.uploaded_at }}{% if m.base_model %} · temel: {{ m.base_model }}{% endif %}{% if m.n_entries %} · {{ m.n_entries }} ifade{% endif %}</span></h3>
+  {% if m.test %}
+  <div class="table-wrap"><table>
+    <tr><th>Test ({{ m.n_test }} belge)</th><th class="num">Kesinlik</th><th class="num">Duyarlılık</th><th class="num">F1</th></tr>
+    {% if m.base %}<tr><td>Temel model (eğitimsiz)</td><td class="num">{{ m.base.micro.precision }}</td><td class="num">{{ m.base.micro.recall }}</td><td class="num">{{ m.base.micro.f1 }}</td></tr>{% endif %}
+    <tr><td><b>Eğitilmiş model</b></td><td class="num">{{ m.test.micro.precision }}</td><td class="num">{{ m.test.micro.recall }}</td><td class="num"><b>{{ m.test.micro.f1 }}</b></td></tr>
+  </table></div>
+  <details style="margin-top:8px"><summary>Türlere göre</summary>
+    <div class="table-wrap"><table>
+      <tr><th>Tür</th><th class="num">Kesinlik</th><th class="num">Duyarlılık</th><th class="num">F1</th><th class="num">Örnek</th></tr>
+      {% for l, v in m.test.per_label.items() %}<tr><td>{{ l }}</td><td class="num">{{ v.precision }}</td><td class="num">{{ v.recall }}</td><td class="num">{{ v.f1 }}</td><td class="num">{{ v.support }}</td></tr>{% endfor %}
+    </table></div></details>
+  <p class="small muted">Kesinlik: modelin bulduklarının ne kadarı dil modeliyle aynı. Duyarlılık: dil modelinin bulduklarının ne kadarını yakaladı.</p>
+  {% endif %}
+  <div class="row-inline" style="margin-top:10px">
+    <input type="text" id="tryText" placeholder="Denemek için bir cümle yaz…">
+    <button type="button" class="secondary" id="tryBtn">Dene</button>
+  </div>
+  <div id="tryOut" class="small" style="margin-top:6px"></div>
+  {% endif %}
+  <details style="margin-top:12px"><summary>Başka makinede (GPU) eğittiğin modeli yükle</summary>
+    <p class="small muted">"GLiNER eğitim biçiminde indir" dosyasıyla <code>scripts/train_gliner.py</code> betiğini (ör. Colab'da) çalıştır,
+      çıkan model klasörünü .zip yapıp buraya yükle.</p>
+    <form method="post" action="/p/{{ p.slug }}/ner/model-upload" enctype="multipart/form-data" class="row-inline">
+      <input type="hidden" name="csrf" value="{{ csrf }}"><input type="file" name="file" accept=".zip" required><button class="secondary">Yükle</button></form>
+  </details>
+</div>
+
+<!-- 4. uygulama -->
+<div class="card" style="margin-top:14px">
+  <h2 style="margin-top:0">4. Kalan belgelere uygula</h2>
+  <p class="small muted">Model, etiketlenmemiş belgelerden varlıkları çıkarır ve grafa ekler (dil modeli kullanılmaz, ücretsiz).
+    {{ st.n_applied }} belgeye uygulandı.</p>
+  <form method="post" action="/p/{{ p.slug }}/ner/apply" class="row-inline" style="flex-wrap:wrap;align-items:center">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <select name="scope" style="width:auto">
+      <option value="unlabeled">Etiketlenmemiş {{ st.n_unlabeled }} belge</option>
+      <option value="all">Tüm {{ st.n_docs }} belge (dil modeli etiketlerinin üzerine yazar)</option>
+    </select>
+    <label class="small" style="margin:0">Eşik <input type="number" name="threshold" value="{{ cfg.threshold }}" min="0.05" max="0.95" step="0.05" style="width:80px"></label>
+    <button {{ 'disabled' if not st.metrics.model_kind }}>Uygula</button>
+  </form>
+  {% if st.n_applied or st.dataset.n_docs %}
+  <div class="actions">
+    <a class="btn secondary small-btn" href="/p/{{ p.slug }}/graph">Grafı gör →</a>
+    <a class="btn secondary small-btn" href="/p/{{ p.slug }}/search">Grafta ara →</a>
+    <form class="inline" method="post" action="/p/{{ p.slug }}/ner/clear" onsubmit="return confirm('Varlık modelinin grafa eklediği her şey kaldırılsın mı?')">
+      <input type="hidden" name="csrf" value="{{ csrf }}"><button name="what" value="graph" class="secondary small-btn">Model sonuçlarını graftan kaldır</button></form>
+  </div>
+  {% endif %}
+</div>
+<p class="small muted" style="margin-top:14px">Komut satırından da çalışır: <code>python -m kg.okg.ner_cli run {{ p.slug }} --domain elektrik --n 200</code></p>
+{% endblock %}
+{% block scripts %}
+<script>
+(() => {
+  document.getElementById('addLabel').onclick = () => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td><input type="text" name="name"></td><td><input type="text" name="desc"></td>' +
+      '<td><button type="button" class="icon" title="Sil">×</button></td>';
+    tr.querySelector('button').onclick = () => tr.remove();
+    document.getElementById('labelTable').appendChild(tr);
+    tr.querySelector('input').focus();
+  };
+  const btn = document.getElementById('tryBtn');
+  if (!btn) return;
+  const esc = s => String(s).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+  btn.onclick = async () => {
+    const text = document.getElementById('tryText').value, out = document.getElementById('tryOut');
+    if (!text.trim()) return;
+    out.textContent = '…';
+    const r = await fetch('/api/p/{{ p.slug }}/ner/try', {method: 'POST', credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify({csrf: {{ csrf | tojson }}, text})});
+    if (!r.ok) { out.textContent = 'Hata: ' + r.status; return; }
+    const ents = (await r.json()).entities;
+    let html = '', last = 0;
+    ents.forEach(e => { html += esc(text.slice(last, e.start)) + `<mark title="${esc(e.label)} · ${e.score ?? ''}">${esc(text.slice(e.start, e.end))}</mark><sub class="muted"> ${esc(e.label)}</sub>`; last = e.end; });
+    out.innerHTML = ents.length ? html + esc(text.slice(last)) : 'Varlık bulunamadı.';
+  };
+})();
+</script>
+{% endblock %}
