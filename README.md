@@ -66,7 +66,8 @@ Binlerce DSpace kaydını tek tek dil modeline göndermek yerine (Belgeler → "
    veri setiyle ince ayarlanır. Veri setinin %20'si testte kullanılır; eğitimsiz temel model ile eğitilmiş model
    aynı test belgelerinde kesinlik/duyarlılık/F1 ile karşılaştırılır. GLiNER kurulu değilse bağımlılıksız
    **sözlük modeli** eğitilir (görülen ifadeleri tanır, yeni adları genelleyemez). GPU'da eğitmek için:
-   `scripts/train_gliner.py` + arayüzden model .zip yükleme.
+   "GLiNER eğitim biçiminde indir" → Colab'da `scripts/train_gliner_colab.ipynb` (veya `scripts/train_gliner.py`) →
+   çıkan `model.zip`'i arayüzden yükle.
 4. **Uygulama:** model etiketlenmemiş belgelerin hepsinden varlık çıkarır (dil modeli yok, ücretsiz). Varlıklar grafa
    `<belge>#ner` katkısı olarak yazılır ve arşiv kaydının Yayın düğümüne `BAHSEDER` ilişkisiyle bağlanır.
 
