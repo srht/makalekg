@@ -53,6 +53,10 @@ Binlerce DSpace kaydını tek tek dil modeline göndermek yerine (Belgeler → "
 
 1. **Varlık türleri:** alanı yaz (ör. "elektrik") → hazır tipik türler gelir (elektrik, bilgisayar, tıp, hukuk,
    uluslararası ilişkiler, eğitim, ekonomi, inşaat, genel) ya da dil modelinden öneri istenir. Liste düzenlenebilir.
+   Liste **JSON olarak yüklenebilir** (ontoloji biçimi: `domain`, `entity_types[{name, description, uri}]`,
+   `relation_types`; türe isteğe bağlı `prompt` = GLiNER'in göreceği kısa etiket, `examples` = örnek listesi).
+   Açıklamalar dil modelinin etiketlemesinde kullanılır; GLiNER kısa etiket metnini görür (boşsa ad, ör.
+   "AnalizYöntemi" → "analiz yöntemi"; istenirse açıklamanın tamamı verilir).
 2. **Eğitim verisi:** N belge (varsayılan 200) gruplar hâlinde dil modeline gönderilir (istek başına ~10 kayıt).
    Anthropic API'de **Message Batches** kullanılır (standart fiyatın yarısı; paket kimliği saklanır, iş yarıda kalırsa
    aynı paket beklenir). Model varlıkları metindeki yazılışıyla döndürür; sistem her geçişin karakter aralığını

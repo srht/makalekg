@@ -28,22 +28,42 @@
     <button name="how" value="llm" class="secondary" {{ 'disabled' if not llm.ready }}>Dil modeline sor</button>
   </form>
 
+  <details style="margin-top:12px" {{ 'open' if not cfg.labels }}>
+    <summary>Tür listesini JSON ile yükle</summary>
+    <form method="post" action="/p/{{ p.slug }}/ner/labels/import" enctype="multipart/form-data" style="margin-top:8px">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <p class="small muted" style="margin-top:0">Biçim: <code>{"domain": "...", "entity_types": [{"name": "Atık", "description": "... (örn. ...)"}], "relation_types": [...]}</code>.
+        Türe isteğe bağlı <code>"prompt"</code> (GLiNER'in göreceği kısa etiket, ör. "analiz yöntemi") veya
+        <code>"examples": ["XRD", "XRF"]</code> ekleyebilirsin. Ontoloji sayfasının JSON'u da olduğu gibi yüklenir.</p>
+      <input type="file" name="file" accept=".json,application/json">
+      <textarea name="text" placeholder="…veya JSON'u buraya yapıştır" style="margin-top:8px;font-family:var(--mono);font-size:13px"></textarea>
+      <label class="check"><input type="checkbox" name="with_relations" value="1" checked> İlişki türlerini (relation_types) proje ontolojisine de ekle</label>
+      <div class="actions"><button class="secondary">JSON'u yükle</button>
+        {% if cfg.labels %}<a class="small" href="/p/{{ p.slug }}/ner/labels.json">Mevcut listeyi JSON olarak indir</a>{% endif %}</div>
+    </form>
+  </details>
+
   <form method="post" action="/p/{{ p.slug }}/ner/labels" style="margin-top:14px">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <div class="table-wrap"><table id="labelTable">
-      <tr><th style="width:28%">Tür</th><th>Açıklama ve örnekler (modelin ne arayacağını anlaması için)</th><th></th></tr>
+      <tr><th style="width:20%">Tür</th><th>Açıklama ve örnekler (dil modeli etiketlerken kullanır)</th>
+        <th style="width:20%" title="GLiNER'in gördüğü kısa etiket metni; boşsa türün adı kullanılır">GLiNER etiketi</th><th></th></tr>
       {% for l in cfg.labels %}
       <tr><td><input type="text" name="name" value="{{ l.name }}"></td><td><input type="text" name="desc" value="{{ l.description }}"></td>
+        <td><input type="text" name="prompt" value="{{ l.prompt or '' }}" placeholder="{{ gmap[l.name] }}"></td>
         <td><button type="button" class="icon" onclick="this.closest('tr').remove()" title="Sil">×</button></td></tr>
       {% endfor %}
     </table></div>
     <div class="actions">
       <button type="button" class="secondary small-btn" id="addLabel">+ tür ekle</button>
       <label class="small" style="margin:0">Eşik <input type="number" name="threshold" value="{{ cfg.threshold }}" min="0.05" max="0.95" step="0.05" style="width:80px"></label>
+      <label class="check small" style="margin:0" title="Kısa etiket yerine açıklamanın tamamı GLiNER'e verilir; test sonuçlarıyla karşılaştırıp karar ver">
+        <input type="checkbox" name="use_desc" value="1" {{ 'checked' if cfg.gliner_use_description }}> GLiNER'e açıklamayı ver</label>
       {% if st.gliner %}<label class="small" style="margin:0">Temel GLiNER modeli <input type="text" name="base_model" value="{{ cfg.base_model }}" style="width:260px"></label>{% endif %}
       <button>Kaydet</button>
     </div>
-    <p class="small muted">Eşik: modelin bir varlığı kabul etmesi için gereken güven (yüksek = daha az ama daha kesin sonuç).
+    <p class="small muted">Açıklama dil modeline gider; GLiNER ise yalnızca kısa etiket metnini görür (boşsa ad, ör. "AnalizYöntemi" → "analiz yöntemi").
+      Etiket metnini değiştirirsen modeli yeniden eğit. Eşik: modelin bir varlığı kabul etmesi için gereken güven (yüksek = daha az ama daha kesin sonuç).
       Türler ontolojiye de eklenir; varlıklar arşiv kaydına <span class="pred">BAHSEDER</span> ilişkisiyle bağlanır.</p>
   </form>
 </div>
@@ -156,7 +176,7 @@
 (() => {
   document.getElementById('addLabel').onclick = () => {
     const tr = document.createElement('tr');
-    tr.innerHTML = '<td><input type="text" name="name"></td><td><input type="text" name="desc"></td>' +
+    tr.innerHTML = '<td><input type="text" name="name"></td><td><input type="text" name="desc"></td><td><input type="text" name="prompt"></td>' +
       '<td><button type="button" class="icon" title="Sil">×</button></td>';
     tr.querySelector('button').onclick = () => tr.remove();
     document.getElementById('labelTable').appendChild(tr);

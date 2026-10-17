@@ -188,7 +188,7 @@ def test_ner_web(webc):
     jl = c.get(f"/p/{slug}/ner/export/dataset.jsonl").text.splitlines()
     assert len(jl) == 5
     gl = c.get(f"/p/{slug}/ner/export/gliner.json").json()
-    assert gl["train"] and gl["train"][0]["tokenized_text"] and "Ekipman" in gl["labels"]
+    assert gl["train"] and gl["train"][0]["tokenized_text"] and "ekipman" in gl["labels"] and gl["label_map"]["Ekipman"] == "ekipman"
     assert "NER" in c.get(f"/p/{slug}/docs").text
     r = c.post(f"/p/{slug}/ner/model-upload", data={"csrf": tok}, files={"file": ("m.zip", b"bozuk", "application/zip")}, follow_redirects=False)
     assert "err=" in r.headers["location"]
@@ -229,5 +229,85 @@ def test_gliner_train_apply_offline(proj, tmp_path):
     m = ner.train(p, kind="gliner", epochs=1)
     assert m["model_kind"] == "gliner" and "test" in m and "base" in m
     assert (ner.ner_dir(p) / "model" / "gliner_config.json").exists()
+    assert m["gliner_labels"]["Yazılım / Araç"] == "yazılım / araç"
     out = ner.apply(p, threshold=0.3)
     assert out["docs"] == 1
+
+
+SAMPLE_JSON = """{
+  "domain": "Atık gazlaştırma ve katı çıktı karakterizasyonu",
+  "entity_types": [
+    {"name": "Süreç", "description": "Termal işlem (örn. gazlaştırma, yakma).", "uri": null},
+    {"name": "AnalizYöntemi", "description": "Deneysel analiz yöntemi (örn. XRD, XRF, SEM).", "uri": null},
+    {"name": "Ürün", "description": "Gaz veya katı çıktı.", "uri": null, "prompt": "ürün veya çıktı"},
+    {"name": "Atık", "description": "Beslenen atık.", "examples": ["tehlikeli atık", "çamur"]}
+  ],
+  "relation_types": [
+    {"name": "ANALİZ_EDER", "description": "Analiz yöntemi numuneye uygulanır.", "source": ["AnalizYöntemi"], "target": ["Atık", "Ürün"], "uri": null},
+    {"name": "ÜRETİR", "description": "Süreç ürün oluşturur.", "source": ["Süreç"], "target": ["Ürün"], "uri": null}
+  ]
+}"""
+
+
+def test_labels_json_import(proj):
+    from kg.okg import ner
+    p, _ = proj
+    parsed = ner.parse_labels_json(SAMPLE_JSON)
+    assert parsed["domain"].startswith("Atık gazlaştırma") and len(parsed["labels"]) == 4
+    atik = parsed["labels"][3]
+    assert atik["description"] == "Beslenen atık. (örn. tehlikeli atık, çamur)"
+    cfg = ner.load_config(p)
+    cfg["labels"] = parsed["labels"]
+    ner.save_config(p, cfg)
+    assert ner.merge_relation_types(p, parsed["relation_types"], parsed["labels"]) == 2
+    onto = p.ontology()
+    assert {"ANALİZ_EDER", "ÜRETİR", "BAHSEDER"} <= {r.name for r in onto.relation_types}
+    assert "AnalizYöntemi" in onto.type_names()
+    lm = ner.gliner_label_map(ner.load_config(p))
+    assert lm == {"Süreç": "süreç", "AnalizYöntemi": "analiz yöntemi", "Ürün": "ürün veya çıktı", "Atık": "atık"}
+    cfg = ner.load_config(p)
+    cfg["gliner_use_description"] = True
+    assert ner.gliner_label_map(cfg)["Süreç"].startswith("Termal işlem")
+    assert ner.gliner_label_map(cfg)["Ürün"] == "ürün veya çıktı"  # prompt önce gelir
+    out = ner.labels_json(p, ner.load_config(p))
+    assert {r["name"] for r in out["relation_types"]} == {"ANALİZ_EDER", "ÜRETİR"}
+    assert ner.parse_labels_json('{"Kişi": "insan", "Yer": "konum"}')["labels"][1] == {"name": "Yer", "description": "konum"}
+    with pytest.raises(ValueError):
+        ner.parse_labels_json('{"domain": "x", "entity_types": []}')
+
+
+def test_gliner_predict_maps_labels():
+    from kg.okg import ner
+
+    class M:
+        def inference(self, texts, labels, threshold, batch_size):
+            assert labels == ["analiz yöntemi"]
+            return [[{"start": 0, "end": 3, "label": "analiz yöntemi", "text": "XRD", "score": 0.9}] for _ in texts]
+
+    g = ner.GlinerModel(M(), "x", {"AnalizYöntemi": "analiz yöntemi"})
+    assert g.predict(["XRD ile incelendi."], ["AnalizYöntemi"])[0][0]["label"] == "AnalizYöntemi"
+
+
+def test_labels_import_web(webc):
+    c, _ = webc
+    from test_web import _csrf, _new_project
+    slug = _new_project(c, "Gazlaştırma")
+    tok = _csrf(c, f"/p/{slug}/ner")
+    r = c.post(f"/p/{slug}/ner/labels/import", data={"csrf": tok, "with_relations": "1"},
+               files={"file": ("turler.json", SAMPLE_JSON.encode(), "application/json")}, follow_redirects=False)
+    assert r.status_code == 303 and "err" not in r.headers["location"]
+    page = c.get(f"/p/{slug}/ner").text
+    assert 'value="AnalizYöntemi"' in page and 'placeholder="analiz yöntemi"' in page and 'value="ürün veya çıktı"' in page
+    assert "Atık gazlaştırma" in page
+    assert "ANALİZ_EDER" in c.get(f"/p/{slug}/ontology").text
+    exp = c.get(f"/p/{slug}/ner/labels.json").json()
+    assert exp["entity_types"][2]["prompt"] == "ürün veya çıktı"
+    r = c.post(f"/p/{slug}/ner/labels/import", data={"csrf": tok, "text": "{bozuk"}, follow_redirects=False)
+    assert "err=" in r.headers["location"]
+    # tablo kaydı prompt ve açıklama seçeneğini korur
+    c.post(f"/p/{slug}/ner/labels", data={"csrf": tok, "name": ["Süreç", "Ürün"], "desc": ["a", "b"],
+                                          "prompt": ["", "çıktı"], "use_desc": "1", "threshold": 0.4})
+    import kg.okg.store as st
+    from kg.okg import ner
+    cfg = ner.load_config(st.Project(slug))
+    assert cfg["gliner_use_description"] and cfg["labels"][1]["prompt"] == "çıktı" and "prompt" not in cfg["labels"][0]

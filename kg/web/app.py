@@ -854,21 +854,57 @@ def ner_page(request: Request, slug: str):
     p = get_project(slug)
     cfg = ner.load_config(p)
     return page(request, "ner.html", **project_ctx(p, "ner"), cfg=cfg, st=ner.status(p), presets=ner.DOMAIN_PRESETS,
+                gmap=ner.gliner_label_map(cfg) if cfg["labels"] else {},
                 matched=ner.match_preset(cfg.get("domain") or "") if cfg.get("domain") else None)
 
 
 @app.post("/p/{slug}/ner/labels")
 def ner_labels(request: Request, slug: str, csrf: str = Form(...), name: list[str] = Form([]), desc: list[str] = Form([]),
-               threshold: float = Form(0.5), base_model: str = Form("")):
+               prompt: list[str] = Form([]), use_desc: str = Form(""), threshold: float = Form(0.5), base_model: str = Form("")):
     check_csrf(request, csrf)
     p = get_project(slug)
     cfg = ner.load_config(p)
-    cfg["labels"] = [{"name": n, "description": desc[i] if i < len(desc) else ""} for i, n in enumerate(name)]
+    at = lambda lst, i: lst[i] if i < len(lst) else ""
+    cfg["labels"] = [{"name": n, "description": at(desc, i), "prompt": at(prompt, i)} for i, n in enumerate(name)]
+    cfg["gliner_use_description"] = bool(use_desc)
     cfg["threshold"] = min(0.95, max(0.05, threshold))
     if base_model.strip():
         cfg["base_model"] = base_model.strip()
     ner.save_config(p, cfg)
     return RedirectResponse(f"/p/{slug}/ner#labels", status_code=303)
+
+
+@app.post("/p/{slug}/ner/labels/import")
+async def ner_labels_import(request: Request, slug: str, csrf: str = Form(...), text: str = Form(""),
+                            file: UploadFile | None = File(None), with_relations: str = Form("")):
+    """Tür listesini JSON'dan yükler (ontoloji biçimi: domain, entity_types, relation_types)."""
+    check_csrf(request, csrf)
+    p = get_project(slug)
+    raw: str | bytes = text
+    if file is not None and file.filename:
+        raw = await _read_upload(file)
+    if not (raw.strip() if isinstance(raw, str) else raw):
+        return RedirectResponse(f"/p/{slug}/ner?err=JSON dosyası seç veya metni yapıştır#labels", status_code=303)
+    try:
+        parsed = ner.parse_labels_json(raw)
+    except (ValueError, UnicodeDecodeError) as exc:
+        return RedirectResponse(f"/p/{slug}/ner?err=JSON okunamadı: {str(exc)[:200]}", status_code=303)
+    cfg = ner.load_config(p)
+    cfg["labels"] = parsed["labels"]
+    if parsed["domain"]:
+        cfg["domain"] = parsed["domain"][:200]
+    ner.save_config(p, cfg)
+    if with_relations and (parsed["relation_types"] or any(l.get("uri") for l in parsed["labels"])):
+        ner.merge_relation_types(p, parsed["relation_types"], parsed["labels"])
+    return RedirectResponse(f"/p/{slug}/ner#labels", status_code=303)
+
+
+@app.get("/p/{slug}/ner/labels.json")
+def ner_labels_export(slug: str):
+    p = get_project(slug)
+    body = json.dumps(ner.labels_json(p, ner.load_config(p)), ensure_ascii=False, indent=2)
+    return Response(body, media_type="application/json",
+                    headers={"Content-Disposition": f'attachment; filename="{slug}-varlik-turleri.json"'})
 
 
 @app.post("/p/{slug}/ner/suggest")
@@ -995,10 +1031,14 @@ def ner_export(slug: str, fmt: str):
     if fmt == "gliner.json":
         cfg = ner.load_config(p)
         train_rows, test_rows = ner.split_dataset(rows)
-        body = json.dumps({"labels": ner.label_names(cfg),
-                           "train": [ex for r in train_rows for ex in ner.to_gliner(r["text"], r["entities"])],
-                           "test": [ex for r in test_rows for ex in ner.to_gliner(r["text"], r["entities"])]},
-                          ensure_ascii=False)
+        lm = ner.gliner_label_map(cfg)
+
+        def conv(rs):
+            return [{**ex, "ner": [[a, b, lm.get(lab, lab)] for a, b, lab in ex["ner"]]}
+                    for r in rs for ex in ner.to_gliner(r["text"], r["entities"])]
+
+        body = json.dumps({"labels": [lm[n] for n in ner.label_names(cfg)], "label_map": lm,
+                           "train": conv(train_rows), "test": conv(test_rows)}, ensure_ascii=False)
         return Response(body, media_type="application/json",
                         headers={"Content-Disposition": f'attachment; filename="{slug}-gliner-train.json"'})
     raise HTTPException(404)

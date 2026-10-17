@@ -184,7 +184,10 @@ def save_config(project: Project, cfg: dict[str, Any]) -> None:
         name = (l.get("name") or "").strip()
         if name and name.casefold() not in seen:
             seen.add(name.casefold())
-            labels.append({"name": name, "description": (l.get("description") or "").strip()})
+            item = {"name": name, "description": (l.get("description") or "").strip()}
+            if (l.get("prompt") or "").strip():
+                item["prompt"] = l["prompt"].strip()
+            labels.append(item)
     cfg["labels"] = labels
     _write(ner_dir(project) / "config.json", cfg)
     _sync_ontology(project, labels)
@@ -207,6 +210,105 @@ def _sync_ontology(project: Project, labels: list[dict[str, str]]) -> None:
             rel.target = sorted(set(rel.target) | set(targets))
     if ents != list(onto.entity_types) or rels != list(onto.relation_types):
         project.save_ontology(Ontology(entity_types=ents, relation_types=rels, domain=onto.domain))
+
+
+def humanize(name: str) -> str:
+    """"AnalizYöntemi" / "Analiz_Yöntemi" → "analiz yöntemi" (GLiNER doğal dil etiketleriyle daha iyi çalışır)."""
+    t = re.sub(r"(?<=[a-zçğıöşü])(?=[A-ZÇĞİÖŞÜ])", " ", name).replace("_", " ").replace("/", " / ")
+    t = t.replace("İ", "i").replace("I", "ı").lower() if re.search("[çğışöüÇĞİŞÖÜ]", t) else t.lower()
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def gliner_label_map(cfg: dict[str, Any]) -> dict[str, str]:
+    """tür adı → GLiNER'in gördüğü etiket metni.
+
+    Öncelik: türün "prompt" alanı; "gliner_use_description" açıksa açıklama; yoksa adın doğal yazılışı.
+    Metinler benzersiz olmalı (çakışırsa adın doğal yazılışına düşülür)."""
+    out: dict[str, str] = {}
+    used: set[str] = set()
+    for l in cfg["labels"]:
+        cands = [l.get("prompt") or ""]
+        if cfg.get("gliner_use_description"):
+            cands.append(re.sub(r"\s+", " ", l.get("description") or "")[:200])
+        cands += [humanize(l["name"]), l["name"]]
+        text = next(c.strip() for c in cands if c.strip() and c.strip().casefold() not in used)
+        used.add(text.casefold())
+        out[l["name"]] = text
+    return out
+
+
+def parse_labels_json(raw: str | bytes) -> dict[str, Any]:
+    """Tür listesi JSON'u: {"domain", "entity_types": [{"name","description","uri"?,"prompt"?,"examples"?}],
+    "relation_types": [...]} (ontoloji biçimi). Ayrıca {"labels": [...]}, düz liste veya {"Ad": "açıklama"} kabul edilir."""
+    data = json.loads(raw)
+    domain, rels = "", []
+    if isinstance(data, dict):
+        domain = str(data.get("domain") or "")
+        rels = data.get("relation_types") or []
+        items = data.get("entity_types") or data.get("labels") or data.get("types")
+        if items is None:  # {"Ad": "açıklama"}
+            items = [{"name": k, "description": v} for k, v in data.items() if isinstance(v, str) and k != "domain"]
+    elif isinstance(data, list):
+        items = data
+    else:
+        raise ValueError("JSON bir nesne veya liste olmalı")
+    labels = []
+    for it in items:
+        if isinstance(it, str):
+            it = {"name": it}
+        if not isinstance(it, dict) or not str(it.get("name") or it.get("label") or "").strip():
+            continue
+        desc = str(it.get("description") or "").strip()
+        ex = it.get("examples") or it.get("örnekler") or []
+        if isinstance(ex, list) and ex:
+            desc = (desc + " " if desc else "") + "(örn. " + ", ".join(map(str, ex[:12])) + ")"
+        label = {"name": str(it.get("name") or it.get("label")).strip(), "description": desc}
+        prompt = it.get("prompt") or it.get("gliner") or it.get("gliner_label")
+        if prompt:
+            label["prompt"] = str(prompt).strip()
+        if it.get("uri"):
+            label["uri"] = str(it["uri"])
+        labels.append(label)
+    if not labels:
+        raise ValueError("JSON'da varlık türü bulunamadı (entity_types / labels listesi)")
+    return {"domain": domain, "labels": labels, "relation_types": rels if isinstance(rels, list) else []}
+
+
+def merge_relation_types(project: Project, rels: list[dict[str, Any]], labels: list[dict[str, Any]]) -> int:
+    """JSON'daki ilişki türlerini (ve türlerin URI'lerini) proje ontolojisine ekler/günceller."""
+    onto = project.ontology()
+    ents = list(onto.entity_types)
+    by_name = {t.name.casefold(): t for t in ents}
+    for l in labels:
+        t = by_name.get(l["name"].casefold())
+        if t is not None:
+            if l.get("description"):
+                t.description = l["description"]
+            if l.get("uri"):
+                t.uri = l["uri"]
+    current = {r.name: r for r in onto.relation_types}
+    n = 0
+    for r in rels:
+        try:
+            rt = RelationType.model_validate(r)
+        except Exception:
+            continue
+        current[rt.name] = rt
+        n += 1
+    project.save_ontology(Ontology(entity_types=ents, relation_types=list(current.values()), domain=onto.domain).cleaned())
+    return n
+
+
+def labels_json(project: Project, cfg: dict[str, Any]) -> dict[str, Any]:
+    names = {l["name"] for l in cfg["labels"]}
+    onto = project.ontology()
+    uris = {t.name: t.uri for t in onto.entity_types}
+    rels = [r.model_dump() for r in onto.relation_types
+            if r.name != MENTIONS_PREDICATE and set(r.source) <= names and set(r.target) <= names]
+    return {"domain": cfg.get("domain", ""),
+            "entity_types": [{"name": l["name"], "description": l["description"], "uri": uris.get(l["name"]),
+                              **({"prompt": l["prompt"]} if l.get("prompt") else {})} for l in cfg["labels"]],
+            "relation_types": rels}
 
 
 def label_names(cfg: dict[str, Any]) -> list[str]:
@@ -571,8 +673,9 @@ class GazetteerModel:
 class GlinerModel:
     kind = "gliner"
 
-    def __init__(self, model: Any, name: str):
+    def __init__(self, model: Any, name: str, label_map: dict[str, str] | None = None):
         self.model, self.name = model, name
+        self.label_map = label_map or {}  # tür adı → GLiNER etiket metni
 
     @classmethod
     def load(cls, name_or_path: str | Path) -> "GlinerModel":
@@ -589,12 +692,14 @@ class GlinerModel:
             wins += [(i, off, w) for off, w in windows(t)]
         out: list[list[dict[str, Any]]] = [[] for _ in texts]
         infer = getattr(self.model, "inference", None) or self.model.batch_predict_entities
+        prompts = [self.label_map.get(n, n) for n in labels]
+        back = dict(zip(prompts, labels))
         for a in range(0, len(wins), 64):
             chunk = wins[a:a + 64]
-            preds = infer([w for _, _, w in chunk], labels, threshold=threshold, batch_size=batch_size)
+            preds = infer([w for _, _, w in chunk], prompts, threshold=threshold, batch_size=batch_size)
             for (i, off, _), ps in zip(chunk, preds):
                 for p in ps:
-                    out[i].append({"start": p["start"] + off, "end": p["end"] + off, "label": p["label"],
+                    out[i].append({"start": p["start"] + off, "end": p["end"] + off, "label": back.get(p["label"], p["label"]),
                                    "text": p["text"], "score": round(float(p.get("score", 0)), 3)})
         return [resolve_overlaps(o) for o in out]
 
@@ -603,7 +708,8 @@ class GlinerModel:
         import torch
 
         examples = [ex for r in train_rows for ex in to_gliner(r["text"], r["entities"])]
-        examples = [ex for ex in examples if ex["tokenized_text"]]
+        examples = [{**ex, "ner": [[a, b, self.label_map.get(lab, lab)] for a, b, lab in ex["ner"]]}
+                    for ex in examples if ex["tokenized_text"]]
         if not examples:
             raise ValueError("Eğitim örneği yok")
         steps = max(1, epochs * math.ceil(len(examples) / batch_size))
@@ -662,6 +768,8 @@ def trained_model(project: Project) -> Any | None:
     if hit and hit[0] == mtime:
         return hit[1]
     m = GlinerModel.load(path) if kind == "gliner" else GazetteerModel.load(path)
+    if kind == "gliner":  # eğitimde kullanılan etiket metinleri; yüklenen modelde güncel ayar
+        m.label_map = meta.get("gliner_labels") or gliner_label_map(load_config(project))
     _model_cache[str(path)] = (mtime, m)
     return m
 
@@ -718,6 +826,8 @@ def train(project: Project, kind: str = "auto", epochs: int = 5, test_ratio: flo
     if kind == "gliner":
         base = base_model or cfg["base_model"]
         m = GlinerModel.load(base)
+        m.label_map = gliner_label_map(cfg)
+        metrics["gliner_labels"] = m.label_map
         if evaluate_base and test_rows:
             log.info("Eğitimden önce temel model (sıfır örnekle) test ediliyor")
             metrics["base"] = evaluate(m, test_rows, labels, th)
@@ -850,8 +960,8 @@ def install_model_zip(project: Project, data: bytes) -> None:
     shutil.rmtree(tmp, ignore_errors=True)
     meta = _read(d / "metrics.json", {})
     meta.update({"model_kind": "gliner", "uploaded_at": time.strftime("%Y-%m-%d %H:%M"), "labels": label_names(load_config(project))})
-    meta.pop("test", None)
-    meta.pop("base", None)
+    for k in ("test", "base", "gliner_labels"):
+        meta.pop(k, None)
     _write(d / "metrics.json", meta)
     _model_cache.clear()
 
