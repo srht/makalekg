@@ -33,8 +33,8 @@
     </div>
   </form>
 
-  <details style="margin-top:12px" {{ 'open' if not cfg.labels }}>
-    <summary>Tür listesini JSON ile yükle</summary>
+  <details style="margin-top:12px" open>
+    <summary><b>Tür listesini JSON ile yükle</b> <span class="small muted">(domain, entity_types, relation_types; açıklama ve örneklerle)</span></summary>
     <form method="post" action="/p/{{ p.slug }}/ner/labels/import" enctype="multipart/form-data" style="margin-top:8px">
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <p class="small muted" style="margin-top:0">Biçim: <code>{"domain": "...", "entity_types": [{"name": "Atık", "description": "... (örn. ...)"}], "relation_types": [...]}</code>.
