@@ -4,6 +4,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}Knowledge Graph Kurucu{% endblock %}</title>
+<script>
+  // Seçilen tema sayfa çizilmeden uygulanır (yanıp sönmesin diye <head> içinde)
+  try { const t = localStorage.getItem('kg-theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}
+  window.kgDark = () => { const t = document.documentElement.dataset.theme;
+    return t ? t === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches; };
+</script>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -15,6 +21,10 @@
   <div class="jobpill">
     {% if current_job %}<a href="/jobs/{{ current_job.id }}">⏳ {{ current_job.title }}{% if current_job.status == "waiting" %} — sıra sende{% endif %}</a>{% endif %}
   </div>
+  <button type="button" class="theme-btn" id="themeBtn" title="Açık / koyu tema" aria-label="Açık veya koyu temaya geç">
+    <svg class="moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></svg>
+    <svg class="sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+  </button>
 </div></header>
 <main>
 {% if manual_pending and path != "/manual" %}
@@ -37,6 +47,19 @@
 {% endif %}
 {% block content %}{% endblock %}
 </main>
+<script>
+(() => {
+  const root = document.documentElement, mq = matchMedia('(prefers-color-scheme: dark)');
+  const changed = () => window.dispatchEvent(new Event('kg-themechange'));
+  document.getElementById('themeBtn').onclick = () => {
+    const next = kgDark() ? 'light' : 'dark';
+    root.dataset.theme = next;
+    try { localStorage.setItem('kg-theme', next); } catch (e) {}
+    changed();
+  };
+  mq.addEventListener('change', () => { if (!root.dataset.theme) changed(); });
+})();
+</script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

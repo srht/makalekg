@@ -72,22 +72,30 @@
 (async () => {
   const slug = {{ p.slug | tojson }}, csrf = {{ csrf | tojson }};
   const data = await (await fetch(`/api/p/${slug}/graph`, {credentials: 'same-origin'})).json();
-  const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+  let dark = kgDark();
   const palette = ['#2f6fb3', '#c0582b', '#2f8a5b', '#8a4fb0', '#b08a1f', '#c23d6b', '#1f8a8a', '#6b7a2f', '#5b5bd6', '#8a5a3c'];
   const typeColor = {}; data.types.forEach((t, i) => typeColor[t] = palette[i % palette.length]);
   data.nodes.forEach(n => { if (!(n.type in typeColor)) typeColor[n.type] = palette[Object.keys(typeColor).length % palette.length]; });
-  const fg = dark ? '#ebe9e2' : '#1c1c1a', edgeCol = dark ? '#7d7b74' : '#9a988f';
+  let fg, edgeCol, originColor;
+  const setColors = () => { fg = dark ? '#ebe9e2' : '#1c1c1a'; edgeCol = dark ? '#7d7b74' : '#9a988f';
+    originColor = {wikidata: dark ? '#8f86c9' : '#7a6fc0', metadata: dark ? '#6f9fb0' : '#5a8a9a', document: edgeCol}; };
+  setColors();
   const degree = {}; data.edges.forEach(e => { degree[e.from] = (degree[e.from] || 0) + 1; degree[e.to] = (degree[e.to] || 0) + 1; });
   const byId = Object.fromEntries(data.nodes.map(n => [n.id, n]));
-  const nodes = new vis.DataSet(data.nodes.map(n => ({id: n.id, label: n.label, group: n.type, title: `${n.label} (${n.type})`,
-    value: 1 + (degree[n.id] || 0), color: {background: typeColor[n.type], border: typeColor[n.type], highlight: {background: typeColor[n.type], border: fg}},
-    font: {color: fg, size: 13}})));
-  const originColor = {wikidata: dark ? '#8f86c9' : '#7a6fc0', metadata: dark ? '#6f9fb0' : '#5a8a9a', document: edgeCol};
+  const nodeColors = n => ({id: n.id, color: {background: typeColor[n.type], border: typeColor[n.type], highlight: {background: typeColor[n.type], border: fg}},
+    font: {color: fg, size: 13}});
+  const nodes = new vis.DataSet(data.nodes.map(n => ({...nodeColors(n), label: n.label, group: n.type, title: `${n.label} (${n.type})`,
+    value: 1 + (degree[n.id] || 0)})));
   const edgeItem = e => ({id: e.id, from: e.from, to: e.to, label: e.label, arrows: 'to',
     dashes: e.origin === 'wikidata' ? true : (e.origin === 'metadata' ? [2, 4] : false),
     color: {color: originColor[e.origin] || edgeCol, highlight: fg},
     font: {size: 10, color: dark ? '#a3a199' : '#67665f', strokeWidth: 3, strokeColor: dark ? '#1d1d1b' : '#ffffff', align: 'middle'}});
   const edges = new vis.DataSet(data.edges.map(edgeItem));
+  window.addEventListener('kg-themechange', () => {  // tema değişince renkleri yeniden uygula
+    dark = kgDark(); setColors();
+    nodes.update(data.nodes.map(nodeColors));
+    edges.update(data.edges.map(edgeItem));
+  });
   const net = new vis.Network(document.getElementById('net'), {nodes, edges}, {
     nodes: {shape: 'dot', scaling: {min: 8, max: 30}},
     edges: {smooth: {type: 'continuous'}, width: 1.2},
