@@ -114,7 +114,22 @@ def test_full_flow_manual(client):
     assert "işlendi" in docs
     g = c.get(f"/api/p/{slug}/graph").json()
     assert {n["label"] for n in g["nodes"]} == {"Türkiye", "NATO", "Recep Tayyip Erdoğan"}
-    assert len(g["edges"]) == 2 and g["edges"][0]["sources"][0]["doc"] == "belge.txt"
+    assert len(g["edges"]) == 2 and "sources" not in g["edges"][0]  # harita verisi hafif; ayrıntı ayrıca çekilir
+    edge = c.get(f"/api/p/{slug}/edge", params={"id": g["edges"][0]["id"]}).json()
+    assert edge["sources"][0]["doc"] == "belge.txt"
+    node = c.get(f"/api/p/{slug}/node", params={"id": g["nodes"][0]["id"]}).json()
+    assert node["mentions"] and node["mentions"][0]["doc"] == "belge.txt"
+    assert c.get(f"/api/p/{slug}/node", params={"id": "yok"}).status_code == 404
+    # ETag: değişmeyen graf tekrar gönderilmez
+    r = c.get(f"/api/p/{slug}/graph")
+    assert c.get(f"/api/p/{slug}/graph", headers={"If-None-Match": r.headers["etag"]}).status_code == 304
+    # yerleşim kaydı: konumlar sonraki yüklemede veriyle gelir
+    pos = {n["id"]: [i * 10.0, -5.5] for i, n in enumerate(g["nodes"])}
+    assert c.post(f"/api/p/{slug}/layout", json={"csrf": "x", "pos": pos}).status_code == 403
+    assert c.post(f"/api/p/{slug}/layout", json={"csrf": _csrf(c), "pos": {**pos, "olmayan": [1, 2]}}).json()["n"] == 3
+    g2 = c.get(f"/api/p/{slug}/graph", headers={"If-None-Match": r.headers["etag"]}).json()
+    assert all("x" in n and "y" in n for n in g2["nodes"])
+    assert c.get(f"/api/p/{slug}/graph", params={"full": 1}).json()["edges"][0]["sources"]
     gp = c.get(f"/p/{slug}/graph").text
     assert "vis-network.min.js" in gp and "Wikidata" in gp
     assert c.get("/static/vendor/vis-network.min.js").status_code == 200
@@ -244,6 +259,7 @@ def test_oai_harvest_flow(client, monkeypatch, tmp_path):
     origins = {e["origin"] for e in g["edges"]}
     assert origins == {"metadata", "document"}
     doc_edge = next(e for e in g["edges"] if e["origin"] == "document")
+    doc_edge = c.get(f"/api/p/{slug}/edge", params={"id": doc_edge["id"]}).json()
     assert doc_edge["sources"][0]["doc"].startswith("Türk dış politikasında NATO")  # doğru kayda atandı
     doc_id = next(x["id"] for x in st)
     page = c.get(f"/p/{slug}/docs/{doc_id}").text

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import csv
+import hashlib
 import hmac
 import io
 import json
@@ -25,6 +26,7 @@ from urllib.parse import urlparse
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup, escape
@@ -54,6 +56,15 @@ async def lifespan(_app):
 
 app = FastAPI(title="Knowledge Graph Kurucu", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=HERE / "static"), name="static")
+app.add_middleware(GZipMiddleware, minimum_size=1024)  # graf verisi ve vis-network.js sıkıştırılarak gönderilir
+
+
+@app.middleware("http")
+async def static_cache(request: Request, call_next):
+    resp = await call_next(request)
+    if request.url.path.startswith("/static/vendor/"):
+        resp.headers["Cache-Control"] = "public, max-age=604800"  # sürümü sabit kütüphaneler: bir hafta önbellekte
+    return resp
 templates = Jinja2Templates(directory=HERE / "templates")
 CSRF_SECRET = (env("APP_SECRET") or secrets.token_hex(32)).encode()
 
@@ -496,25 +507,131 @@ def _origin(sources: list[dict[str, Any]]) -> str:
 
 
 def _graph_payload(p: Project) -> dict[str, Any]:
+    """Tam ayrıntılı graf (yol bulma ve dışa aktarım için)."""
     g = p.graph()
     docs = {d["id"]: d["filename"] for d in p.documents()}
     nodes = []
     for key, e in g["entities"].items():
-        nodes.append({"id": key, "label": e["name"], "type": e["type"], "description": e.get("description"),
-                      "wikidata": e.get("wikidata"), "alternatives": e.get("wikidata_alternatives") or [],
-                      "mentions": [{"doc": _source_name(docs, m["doc_id"]), "text": m["text"]} for m in e["mentions"]][:20]})
-    edges = []
-    for r in g["relations"].values():
-        edges.append({"id": r["id"], "from": r["subject"], "to": r["object"], "label": r["predicate"],
-                      "origin": _origin(r["sources"]),
-                      "sources": [{"doc": _source_name(docs, s["doc_id"]), "sentence": s["sentence"],
-                                   "confidence": s.get("confidence")} for s in r["sources"]][:10]})
+        nodes.append(_node_detail(key, e, docs))
+    edges = [_edge_detail(r, docs) for r in g["relations"].values()]
     return {"nodes": nodes, "edges": edges, "types": p.ontology().type_names()}
 
 
+def _node_detail(key: str, e: dict[str, Any], docs: dict[str, str]) -> dict[str, Any]:
+    return {"id": key, "label": e["name"], "type": e["type"], "description": e.get("description"),
+            "wikidata": e.get("wikidata"), "alternatives": e.get("wikidata_alternatives") or [],
+            "n_mentions": len(e["mentions"]),
+            "mentions": [{"doc": _source_name(docs, m["doc_id"]), "text": m["text"]} for m in e["mentions"]][:20]}
+
+
+def _edge_detail(r: dict[str, Any], docs: dict[str, str]) -> dict[str, Any]:
+    return {"id": r["id"], "from": r["subject"], "to": r["object"], "label": r["predicate"], "origin": _origin(r["sources"]),
+            "n_sources": len(r["sources"]),
+            "sources": [{"doc": _source_name(docs, s["doc_id"]), "sentence": s["sentence"],
+                         "confidence": s.get("confidence")} for s in r["sources"]][:10]}
+
+
+# Graf haritası için hafif veri: yalnızca çizim için gerekenler (ayrıntılar tıklanınca ayrıca çekilir),
+# grafın sürümüne göre bellekte tutulur ve ETag ile tarayıcı önbelleğinden döner.
+_light_cache: dict[str, tuple[str, bytes]] = {}
+
+
+def _graph_version(p: Project) -> str:
+    parts = []
+    for name in ("graph.json", "documents.json", "ontology.json", "layout.json"):
+        try:
+            st = (p.dir / name).stat()
+            parts.append(f"{st.st_mtime_ns:x}-{st.st_size:x}")
+        except OSError:
+            parts.append("0")
+    return hashlib.sha1("|".join(parts).encode()).hexdigest()[:16]
+
+
+def _graph_light(p: Project) -> tuple[str, bytes]:
+    ver = _graph_version(p)
+    hit = _light_cache.get(p.slug)
+    if hit and hit[0] == ver:
+        return hit
+    g = p.graph()
+    layout = (_read_layout(p).get("pos") or {})
+    nodes = []
+    for key, e in g["entities"].items():
+        n: dict[str, Any] = {"id": key, "label": e["name"], "type": e["type"]}
+        pos = layout.get(key)
+        if pos:
+            n["x"], n["y"] = pos
+        nodes.append(n)
+    edges = [{"id": r["id"], "from": r["subject"], "to": r["object"], "label": r["predicate"], "origin": _origin(r["sources"])}
+             for r in g["relations"].values()]
+    body = json.dumps({"version": ver, "nodes": nodes, "edges": edges, "types": p.ontology().type_names()},
+                      ensure_ascii=False, separators=(",", ":")).encode()
+    _light_cache[p.slug] = (ver, body)
+    return ver, body
+
+
 @app.get("/api/p/{slug}/graph")
-def graph_api(slug: str):
-    return JSONResponse(_graph_payload(get_project(slug)))
+def graph_api(request: Request, slug: str, full: bool = False):
+    p = get_project(slug)
+    if full:
+        return JSONResponse(_graph_payload(p))
+    ver, body = _graph_light(p)
+    etag = f'"{ver}"'
+    headers = {"ETag": etag, "Cache-Control": "private, no-cache"}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return Response(body, media_type="application/json", headers=headers)
+
+
+@app.get("/api/p/{slug}/node")
+def node_api(slug: str, id: str):
+    p = get_project(slug)
+    e = p.graph()["entities"].get(id)
+    if not e:
+        raise HTTPException(404, "Varlık bulunamadı")
+    return _node_detail(id, e, {d["id"]: d["filename"] for d in p.documents()})
+
+
+@app.get("/api/p/{slug}/edge")
+def edge_api(slug: str, id: str):
+    p = get_project(slug)
+    r = next((r for r in p.graph()["relations"].values() if r["id"] == id), None)
+    if not r:
+        raise HTTPException(404, "İlişki bulunamadı")
+    return _edge_detail(r, {d["id"]: d["filename"] for d in p.documents()})
+
+
+MAX_LAYOUT_NODES = 50000
+
+
+def _read_layout(p: Project) -> dict[str, Any]:
+    try:
+        return json.loads((p.dir / "layout.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+@app.post("/api/p/{slug}/layout")
+async def layout_save(request: Request, slug: str):
+    """Tarayıcının hesapladığı düğüm konumlarını saklar: sonraki açılışlarda yerleşim yeniden hesaplanmaz."""
+    p = get_project(slug)
+    try:
+        data = await request.json()
+    except ValueError:
+        raise HTTPException(400, "Geçersiz veri")
+    check_csrf(request, str(data.get("csrf", "")))
+    keys = p.graph()["entities"].keys()
+    pos = {}
+    for k, v in (data.get("pos") or {}).items():
+        if k in keys and isinstance(v, list) and len(v) == 2 and all(isinstance(x, (int, float)) for x in v):
+            pos[k] = [round(float(v[0]), 1), round(float(v[1]), 1)]
+    if len(pos) > MAX_LAYOUT_NODES:
+        raise HTTPException(413, "Çok fazla düğüm")
+    merged = {**(_read_layout(p).get("pos") or {}), **pos} if data.get("merge") else pos
+    merged = {k: v for k, v in merged.items() if k in keys}
+    tmp = p.dir / ".layout.json.tmp"
+    tmp.write_text(json.dumps({"pos": merged}, separators=(",", ":")), encoding="utf-8")
+    tmp.replace(p.dir / "layout.json")
+    return {"ok": True, "n": len(merged), "version": _graph_version(p)}
 
 
 # ---------------------------------------------------------------- arama

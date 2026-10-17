@@ -23,7 +23,8 @@ knowledge graph kuran web uygulaması.
    güncellenir; arşivde silinmişse belge de silinir. Kayıtlar istenirse ontolojiye göre de işlenir; kısa kayıtlar
    tek istemde gruplanır (kopyala–yapıştır modunda az sayıda yapıştırma).
 4. **Graf:** etkileşimli ağ görünümü. Bir düğüme/oka tıklayınca ayrıntısı ve **hangi belgedeki hangi cümleden
-   geldiği** görünür. İki varlık arasındaki bağlantı zincirini bulabilirsin.
+   geldiği** görünür. İki varlık arasındaki bağlantı zincirini bulabilirsin. Düğüm yerleşimi ilk açılışta bir kez
+   hesaplanıp `layout.json`'a kaydedilir; sonraki açılışlar anında yüklenir (yeni eklenen düğümler komşularının yanına yerleşir).
    **Ara** sayfası (her proje sayfasının üstündeki kutu da): birkaç kelime yaz, kelimelerin geçtiği ilişkiler
    kaynak cümleleriyle listelenir. Kelimeler varlık adlarında, ilişki adlarında, türlerde ve cümlelerde aranır;
    büyük/küçük harf, Türkçe karakter ve ek farkı sorun olmaz. Birden çok kelimede

@@ -27,7 +27,8 @@
 
 <p id="focusInfo" class="small muted" hidden></p>
 <div class="graph-wrap">
-  <div id="net" class="net" aria-label="Knowledge graph"></div>
+  <div class="net-box"><div id="net" class="net" aria-label="Knowledge graph"></div>
+    <div id="netLoading" class="net-loading"><span>Graf yükleniyor…</span><div class="bar"><span id="netBar" style="width:0%"></span></div></div></div>
   <aside id="panel" class="card panel"><p class="muted small">Ayrıntı için bir düğüme veya oka tıkla.</p></aside>
 </div>
 
@@ -71,7 +72,10 @@
 <script>
 (async () => {
   const slug = {{ p.slug | tojson }}, csrf = {{ csrf | tojson }};
+  const loading = document.getElementById('netLoading'), bar = document.getElementById('netBar');
   const data = await (await fetch(`/api/p/${slug}/graph`, {credentials: 'same-origin'})).json();
+  const N = data.nodes.length, E = data.edges.length;
+  const big = N > 150 || E > 300;  // büyük graflarda pahalı çizim seçenekleri kapatılır
   let dark = kgDark();
   const palette = ['#2f6fb3', '#c0582b', '#2f8a5b', '#8a4fb0', '#b08a1f', '#c23d6b', '#1f8a8a', '#6b7a2f', '#5b5bd6', '#8a5a3c'];
   const typeColor = {}; data.types.forEach((t, i) => typeColor[t] = palette[i % palette.length]);
@@ -80,32 +84,73 @@
   const setColors = () => { fg = dark ? '#ebe9e2' : '#1c1c1a'; edgeCol = dark ? '#7d7b74' : '#9a988f';
     originColor = {wikidata: dark ? '#8f86c9' : '#7a6fc0', metadata: dark ? '#6f9fb0' : '#5a8a9a', document: edgeCol}; };
   setColors();
-  const degree = {}; data.edges.forEach(e => { degree[e.from] = (degree[e.from] || 0) + 1; degree[e.to] = (degree[e.to] || 0) + 1; });
+  const degree = {}, adjAll = {};
+  data.edges.forEach(e => { degree[e.from] = (degree[e.from] || 0) + 1; degree[e.to] = (degree[e.to] || 0) + 1;
+    (adjAll[e.from] = adjAll[e.from] || []).push(e); (adjAll[e.to] = adjAll[e.to] || []).push(e); });
   const byId = Object.fromEntries(data.nodes.map(n => [n.id, n]));
-  const nodeColors = n => ({id: n.id, color: {background: typeColor[n.type], border: typeColor[n.type], highlight: {background: typeColor[n.type], border: fg}},
-    font: {color: fg, size: 13}});
+  const edgeById = Object.fromEntries(data.edges.map(e => [e.id, e]));
+
+  // Kayıtlı yerleşim: sunucuda saklanan konumlar varsa yerleşim yeniden hesaplanmaz.
+  const placed = data.nodes.filter(n => n.x !== undefined).length;
+  if (placed && placed < N) {  // yeni düğümleri konumlu bir komşusunun yanına koy
+    data.nodes.forEach(n => {
+      if (n.x !== undefined) return;
+      const nb = (adjAll[n.id] || []).map(e => byId[e.from === n.id ? e.to : e.from]).find(m => m && m.x !== undefined);
+      if (nb) { n.x = nb.x + (Math.random() - .5) * 120; n.y = nb.y + (Math.random() - .5) * 120; }
+    });
+  }
+  const needLayout = placed < N;
+
+  let labelsOn = !big;
+  // Renkler tür gruplarında tanımlanır (düğüm başına renk, gizle/göster güncellemelerinde grup rengiyle eziliyordu)
+  const groupOpts = () => Object.fromEntries(Object.entries(typeColor).map(([t, c]) => [t, {color: {background: c, border: c,
+    highlight: {background: c, border: fg}, hover: {background: c, border: fg}}, font: {color: fg, size: 13}}]));
+  const nodeColors = n => ({id: n.id, font: {color: fg, size: 13}});
   const nodes = new vis.DataSet(data.nodes.map(n => ({...nodeColors(n), label: n.label, group: n.type, title: `${n.label} (${n.type})`,
-    value: 1 + (degree[n.id] || 0)})));
-  const edgeItem = e => ({id: e.id, from: e.from, to: e.to, label: e.label, arrows: 'to',
+    value: 1 + (degree[n.id] || 0), ...(n.x !== undefined ? {x: n.x, y: n.y} : {})})));
+  const edgeItem = e => ({id: e.id, from: e.from, to: e.to, label: labelsOn ? e.label : '', arrows: 'to',
     dashes: e.origin === 'wikidata' ? true : (e.origin === 'metadata' ? [2, 4] : false),
     color: {color: originColor[e.origin] || edgeCol, highlight: fg},
     font: {size: 10, color: dark ? '#a3a199' : '#67665f', strokeWidth: 3, strokeColor: dark ? '#1d1d1b' : '#ffffff', align: 'middle'}});
   const edges = new vis.DataSet(data.edges.map(edgeItem));
   window.addEventListener('kg-themechange', () => {  // tema değişince renkleri yeniden uygula
     dark = kgDark(); setColors();
+    net.setOptions({groups: groupOpts()});
     nodes.update(data.nodes.map(nodeColors));
     edges.update(data.edges.map(edgeItem));
   });
   const net = new vis.Network(document.getElementById('net'), {nodes, edges}, {
+    layout: {improvedLayout: N <= 100},  // büyük graflarda çok yavaş olan ön yerleşimi atla
     nodes: {shape: 'dot', scaling: {min: 8, max: 30}},
-    edges: {smooth: {type: 'continuous'}, width: 1.2},
-    physics: {stabilization: {iterations: 250}, barnesHut: {gravitationalConstant: -6000, springLength: 140}},
-    interaction: {hover: true, tooltipDelay: 150}});
+    groups: groupOpts(),
+    edges: {smooth: big ? false : {type: 'continuous'}, width: 1.2},
+    physics: {enabled: needLayout, stabilization: {enabled: needLayout, iterations: placed ? 80 : (big ? 150 : 250), updateInterval: 10},
+      barnesHut: {gravitationalConstant: -6000, springLength: 140}},
+    interaction: {hover: !big, tooltipDelay: 150, hideEdgesOnDrag: big, hideEdgesOnZoom: big}});
+
+  // Büyük graflarda ok etiketleri yalnızca yakınlaşınca (veya odak görünümünde) çizilir
+  const setLabels = on => { if (on === labelsOn) return; labelsOn = on; edges.update(data.edges.map(e => ({id: e.id, label: on ? e.label : ''}))); };
+  if (big) net.on('zoom', () => { if (!focus) setLabels(net.getScale() >= 0.9); });
+
+  let basePos = null;  // tam görünümün konumları: odaktan çıkınca geri yüklenir
   const startFocus = new URLSearchParams(location.search).get('focus');  // arama sayfasından "grafikte →"
-  net.once('stabilizationIterationsDone', () => {
-    net.setOptions({physics: false}); net.fit({maxZoomLevel: 1.1});
+  function ready() {
+    net.setOptions({physics: false}); loading.hidden = true;
+    basePos = net.getPositions();
+    net.fit({maxZoomLevel: 1.1});
     if (startFocus && byId[startFocus]) { document.getElementById('q').value = byId[startFocus].label; focusOn(startFocus); }
-  });
+  }
+  if (needLayout) {
+    net.on('stabilizationProgress', p => { bar.style.width = Math.round(100 * p.iterations / p.total) + '%';
+      loading.querySelector('span').textContent = `Yerleşim hesaplanıyor (${N} varlık)…`; });
+    net.once('stabilizationIterationsDone', () => {
+      ready();
+      fetch(`/api/p/${slug}/layout`, {method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({csrf, pos: Object.fromEntries(Object.entries(basePos).map(([k, v]) => [k, [v.x, v.y]]))})}).catch(() => {});
+    });
+  } else {
+    requestAnimationFrame(ready);
+  }
 
   // lejant + tür filtresi
   const hidden = new Set();
@@ -129,14 +174,11 @@
   // Odak: seçilen düğümden başlayarak adım adım komşuları ekler; her adımda en çok bağlantılı olanlar önce gelir
   function computeFocus(id) {
     const depth = +document.getElementById('depth').value, maxN = +document.getElementById('maxN').value;
-    const adj = {};
-    data.edges.forEach(e => {
-      if (!originOk(e) || hidden.has(byId[e.from]?.type) || hidden.has(byId[e.to]?.type)) return;
-      (adj[e.from] = adj[e.from] || []).push(e.to); (adj[e.to] = adj[e.to] || []).push(e.from);
-    });
+    const ok = e => originOk(e) && !hidden.has(byId[e.from]?.type) && !hidden.has(byId[e.to]?.type);
+    const nbrs = n => (adjAll[n] || []).filter(ok).map(e => e.from === n ? e.to : e.from);
     const visible = new Set([id]); let frontier = [id], total = 0;
     for (let d = 0; d < depth && visible.size <= maxN; d++) {
-      const cand = [...new Set(frontier.flatMap(n => adj[n] || []))].filter(n => !visible.has(n));
+      const cand = [...new Set(frontier.flatMap(nbrs))].filter(n => !visible.has(n));
       cand.sort((a, b) => (degree[b] || 0) - (degree[a] || 0));
       total += cand.length;
       const take = cand.slice(0, Math.max(0, maxN - (visible.size - 1)));
@@ -145,9 +187,13 @@
     return {id, visible, omitted: Math.max(0, total - (visible.size - 1))};
   }
   function relayout(ids) {
+    if (big) setLabels(true);
     net.setOptions({physics: {enabled: true}});
+    let done = false;
+    const finish = () => { if (done) return; done = true; net.setOptions({physics: false}); net.fit({nodes: ids, maxZoomLevel: 1.4, animation: true}); };
+    net.once('stabilizationIterationsDone', finish); net.once('stabilized', finish);
     net.stabilize(150);
-    net.once('stabilized', () => { net.setOptions({physics: false}); net.fit({nodes: ids, maxZoomLevel: 1.4, animation: true}); });
+    setTimeout(finish, 4000);  // olay gelmezse de odağa yakınlaş
   }
   const info = document.getElementById('focusInfo'), showAllBtn = document.getElementById('showAll');
   function focusOn(id) {
@@ -162,6 +208,8 @@
   function clearFocus() {
     if (!focus) return;
     focus = null; applyFilter(); info.hidden = true; showAllBtn.hidden = true;
+    if (basePos) nodes.update(Object.entries(basePos).map(([id, p]) => ({id, x: p.x, y: p.y})));
+    if (big) setLabels(false);
     net.fit({maxZoomLevel: 1.1, animation: true});
   }
   showAllBtn.onclick = () => { document.getElementById('q').value = ''; clearFocus(); };
@@ -174,8 +222,11 @@
 
   // arama
   const dl = document.getElementById('nodeList');
-  data.nodes.forEach(n => { const o = document.createElement('option'); o.value = n.label; dl.appendChild(o); });
-  const findId = label => (data.nodes.find(n => n.label.toLocaleLowerCase('tr') === label.trim().toLocaleLowerCase('tr')) || {}).id;
+  const frag = document.createDocumentFragment();
+  data.nodes.forEach(n => { const o = document.createElement('option'); o.value = n.label; frag.appendChild(o); });
+  dl.appendChild(frag);
+  const byLabel = {}; data.nodes.forEach(n => { byLabel[n.label.toLocaleLowerCase('tr')] ??= n.id; });
+  const findId = label => byLabel[label.trim().toLocaleLowerCase('tr')];
   document.getElementById('q').addEventListener('change', e => {
     if (!e.target.value.trim()) { clearFocus(); return; }
     const id = findId(e.target.value); if (!id) return;
@@ -186,34 +237,56 @@
   // ayrıntı paneli
   const panel = document.getElementById('panel');
   const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
-  function showNode(id) {
+  // Ayrıntılar (açıklama, Wikidata, geçtiği yerler, kaynak cümleler) tıklanınca sunucudan çekilir
+  const detailCache = {};
+  let panelToken = 0;
+  const detail = (kind, id) => detailCache[kind + id] ??= fetch(`/api/p/${slug}/${kind}?id=${encodeURIComponent(id)}`,
+    {credentials: 'same-origin'}).then(r => r.ok ? r.json() : null).catch(() => null);
+  const MAX_RELS = 150;
+  async function showNode(id) {
     const n = byId[id]; if (!n) return;
-    const rels = data.edges.filter(e => e.from === id || e.to === id);
-    const wd = n.wikidata ? `<p class="small">Wikidata: <a href="${esc(n.wikidata.url)}" target="_blank" rel="noopener">${esc(n.wikidata.label)} (${esc(n.wikidata.qid)})</a>
-        <span class="muted">${esc(n.wikidata.description)}</span> <button class="icon" id="unlink" title="Eşleme yanlış">×</button></p>` : '';
-    const alts = (n.wikidata && n.alternatives.length) ? `<details class="small"><summary>Başka Wikidata adayı</summary>${n.alternatives.map(a =>
-        `<div><button class="chip" data-qid="${esc(a.qid)}">${esc(a.label)}</button> <span class="muted">${esc(a.description)}</span></div>`).join('')}</details>` : '';
-    panel.innerHTML = `<span class="badge" style="border-color:${typeColor[n.type]};color:${typeColor[n.type]}">${esc(n.type)}</span>
-      <h3 style="margin-top:6px">${esc(n.label)}</h3>${n.description ? `<p class="small">${esc(n.description)}</p>` : ''}${wd}${alts}
-      <button type="button" class="chip" id="focusBtn">Yalnızca bunun çevresini göster</button>
-      <h4>İlişkiler (${rels.length})</h4>${rels.map(e => `<div class="small rel-line"><a href="#" data-edge="${esc(e.id)}">${esc(byId[e.from]?.label)}
+    const token = ++panelToken;
+    const rels = adjAll[id] || [];
+    const head = `<span class="badge" style="border-color:${typeColor[n.type]};color:${typeColor[n.type]}">${esc(n.type)}</span>
+      <h3 style="margin-top:6px">${esc(n.label)}</h3>`;
+    const relHtml = `<button type="button" class="chip" id="focusBtn">Yalnızca bunun çevresini göster</button>
+      <h4>İlişkiler (${rels.length})</h4>${rels.slice(0, MAX_RELS).map(e => `<div class="small rel-line"><a href="#" data-edge="${esc(e.id)}">${esc(byId[e.from]?.label)}
         <span class="pred">${esc(e.label)}</span> ${esc(byId[e.to]?.label)}</a>${e.origin === 'wikidata' ? ' <span class="badge hyp">Wikidata</span>' : ''}</div>`).join('') || '<p class="small muted">yok</p>'}
-      <h4>Belgelerde geçtiği yerler</h4>${n.mentions.map(m => `<div class="small"><b>${esc(m.doc)}</b>: “${esc(m.text)}”</div>`).join('') || '<p class="small muted">—</p>'}`;
+      ${rels.length > MAX_RELS ? `<p class="small muted">… ve ${rels.length - MAX_RELS} ilişki daha (<a href="/p/${slug}/search?entity=${encodeURIComponent(id)}">tümünü listele</a>)</p>` : ''}`;
+    panel.innerHTML = head + '<p class="small muted" id="nodeDetail">…</p>' + relHtml;
+    bindPanel(id, n);
+    const d = await detail('node', id);
+    if (token !== panelToken || !d) return;
+    const wd = d.wikidata ? `<p class="small">Wikidata: <a href="${esc(d.wikidata.url)}" target="_blank" rel="noopener">${esc(d.wikidata.label)} (${esc(d.wikidata.qid)})</a>
+        <span class="muted">${esc(d.wikidata.description)}</span> <button class="icon" id="unlink" title="Eşleme yanlış">×</button></p>` : '';
+    const alts = (d.wikidata && d.alternatives.length) ? `<details class="small"><summary>Başka Wikidata adayı</summary>${d.alternatives.map(a =>
+        `<div><button class="chip" data-qid="${esc(a.qid)}">${esc(a.label)}</button> <span class="muted">${esc(a.description)}</span></div>`).join('')}</details>` : '';
+    panel.innerHTML = head + (d.description ? `<p class="small">${esc(d.description)}</p>` : '') + wd + alts + relHtml +
+      `<h4>Belgelerde geçtiği yerler${d.n_mentions > d.mentions.length ? ` (${d.mentions.length} / ${d.n_mentions})` : ''}</h4>` +
+      (d.mentions.map(m => `<div class="small"><b>${esc(m.doc)}</b>: “${esc(m.text)}”</div>`).join('') || '<p class="small muted">—</p>');
+    bindPanel(id, n);
+  }
+  function bindPanel(id, n) {
     document.getElementById('focusBtn').onclick = () => { document.getElementById('q').value = n.label; focusOn(id); };
     const un = document.getElementById('unlink');
     if (un) un.onclick = () => setLink(id, '');
     panel.querySelectorAll('[data-qid]').forEach(b => b.onclick = () => setLink(id, b.dataset.qid));
     panel.querySelectorAll('[data-edge]').forEach(a => a.onclick = ev => { ev.preventDefault(); net.selectEdges([a.dataset.edge]); showEdge(a.dataset.edge); });
   }
-  function showEdge(id) {
-    const e = data.edges.find(x => x.id === id); if (!e) return;
+  async function showEdge(id) {
+    const e = edgeById[id]; if (!e) return;
+    const token = ++panelToken;
     const originLabel = {wikidata: 'Wikidata', metadata: 'Arşiv metadata', document: 'Belgeden'}[e.origin];
-    panel.innerHTML = `<span class="badge ${e.origin === 'wikidata' ? 'hyp' : ''}">${originLabel}</span>
+    const head = `<span class="badge ${e.origin === 'wikidata' ? 'hyp' : ''}">${originLabel}</span>
       <h3 style="margin-top:6px"><a href="#" data-node="${esc(e.from)}">${esc(byId[e.from]?.label)}</a> <span class="pred">${esc(e.label)}</span>
-        <a href="#" data-node="${esc(e.to)}">${esc(byId[e.to]?.label)}</a></h3>
-      <h4>Kaynak (${e.sources.length})</h4>${e.sources.map(s => `<div class="small"><b>${esc(s.doc)}</b>
+        <a href="#" data-node="${esc(e.to)}">${esc(byId[e.to]?.label)}</a></h3>`;
+    const bind = () => panel.querySelectorAll('[data-node]').forEach(a => a.onclick = ev => { ev.preventDefault(); net.selectNodes([a.dataset.node]); showNode(a.dataset.node); });
+    panel.innerHTML = head + '<p class="small muted">…</p>'; bind();
+    const d = await detail('edge', id);
+    if (token !== panelToken || !d) return;
+    panel.innerHTML = head + `<h4>Kaynak (${d.n_sources})</h4>${d.sources.map(s => `<div class="small"><b>${esc(s.doc)}</b>
         <blockquote>${esc(s.sentence)}</blockquote></div>`).join('')}`;
-    panel.querySelectorAll('[data-node]').forEach(a => a.onclick = ev => { ev.preventDefault(); net.selectNodes([a.dataset.node]); showNode(a.dataset.node); });
+    bind();
   }
   async function setLink(id, qid) {
     const body = new URLSearchParams({csrf, key: id, qid});

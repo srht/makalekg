@@ -179,3 +179,7 @@ mark { background: color-mix(in srgb, var(--warn) 28%, transparent); color: inhe
 }
 .hit-group { padding: 8px 14px; background: var(--surface-2); border-bottom: 1px solid var(--line); font-size: 13px; font-weight: 600; }
 .hit-group:not(:first-child) { border-top: 1px solid var(--line); }
+.net-box { position: relative; min-width: 0; }
+.net-loading { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 10px; align-items: center; justify-content: center;
+  color: var(--muted); font-size: 14px; background: var(--surface); border-radius: var(--radius); }
+.net-loading .bar { width: min(260px, 70%); }
