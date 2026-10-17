@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Ara{% if q %}: {{ q }}{% endif %} — {{ meta.name }}{% endblock %}
+{% macro qs(extra) -%}
+/p/{{ p.slug }}/search?{{ dict(q=q, origin=origin, **extra) | urlencode }}
+{%- endmacro %}
+{% block content %}
+<h1>Grafta ara</h1>
+<p class="lead">Birkaç kelime yaz: bu kelimelerin geçtiği <b>ilişkiler</b> kaynak cümleleriyle birlikte listelenir.
+  Kelimeler varlık adlarında, ilişki adlarında, türlerde ve kaynak cümlelerde aranır; ekler sorun olmaz
+  (<i>ankara</i> → <i>Ankara'da</i>).</p>
+
+<form class="card searchbar" method="get" action="/p/{{ p.slug }}/search" role="search">
+  <input type="search" name="q" value="{{ q }}" placeholder="ör. yapay zeka sağlık" autofocus aria-label="Aranacak kelimeler">
+  {% if res and res.entity %}<input type="hidden" name="entity" value="{{ res.entity.key }}">{% endif %}
+  <select name="origin" aria-label="Kaynak">
+    <option value="" {{ 'selected' if not origin }}>Tüm kaynaklar</option>
+    <option value="document" {{ 'selected' if origin == 'document' }}>Yalnız belgelerden</option>
+    <option value="metadata" {{ 'selected' if origin == 'metadata' }}>Yalnız arşiv metadata</option>
+    <option value="wikidata" {{ 'selected' if origin == 'wikidata' }}>Yalnız Wikidata</option>
+  </select>
+  <button>Ara</button>
+</form>
+
+{% if not stats.n_relations %}
+<div class="notice">Grafta henüz ilişki yok. <a href="/p/{{ p.slug }}/docs">Belgeler</a> sayfasından dosya yükleyip işle.</div>
+{% elif not res %}
+<div class="examples small" style="margin-top:12px">
+  {% if examples.entities %}<p><span class="muted">En çok bağlantılı varlıklar:</span>
+    {% for e in examples.entities %}<a class="chip" href="/p/{{ p.slug }}/search?{{ dict(q=e) | urlencode }}">{{ e }}</a>{% endfor %}</p>{% endif %}
+  {% if examples.predicates %}<p><span class="muted">İlişki türleri:</span>
+    {% for e in examples.predicates %}<a class="chip" href="/p/{{ p.slug }}/search?{{ dict(q=e) | urlencode }}">{{ e }}</a>{% endfor %}</p>{% endif %}
+</div>
+{% else %}
+
+{% if res.entity %}
+<div class="notice good" style="margin-top:12px"><b>{{ res.entity.name }}</b> <span class="muted">({{ res.entity.type }})</span> varlığının ilişkileri
+  {% if res.tokens %} — “{{ q }}” ile süzülmüş{% endif %}.
+  <a href="/p/{{ p.slug }}/graph?focus={{ res.entity.key | urlencode }}">Grafikte göster</a> ·
+  <a href="/p/{{ p.slug }}/search?{{ dict(q=q, origin=origin) | urlencode }}">süzgeci kaldır</a></div>
+{% endif %}
+
+{% if res.entities %}
+<div style="margin-top:14px">
+  <div class="small muted" style="margin-bottom:4px">Eşleşen varlıklar — tıklayınca yalnızca o varlığın ilişkileri listelenir:</div>
+  <div class="ent-chips">
+    {% for e in res.entities %}
+    <a class="chip" href="/p/{{ p.slug }}/search?{{ dict(entity=e.key, origin=origin) | urlencode }}" title="{{ e.description or '' }}">
+      {{ hl(e.name) }} <span class="muted small">{{ e.type }} · {{ e.degree }}</span></a>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+<div class="row-between" style="margin-top:18px">
+  <h2 style="margin:0">{{ res.total }} ilişki bulundu</h2>
+  {% if res.total %}<span class="small"><a href="/p/{{ p.slug }}/search.csv?{{ dict(q=q, origin=origin, entity=(res.entity.key if res.entity else '')) | urlencode }}">CSV indir</a></span>{% endif %}
+</div>
+{% if res.partial %}
+<div class="notice small">Kelimelerin <b>hepsini</b> içeren ilişki yok; en az birini içerenler, en çok eşleşen üstte olacak şekilde gösteriliyor.</div>
+{% endif %}
+
+{% if res.relations %}
+<div class="card hits" style="padding:0">
+  {% for r in res.relations %}
+  <div class="hit">
+    <div class="triple">
+      <a class="ent" href="/p/{{ p.slug }}/search?{{ dict(entity=r.subject.key, origin=origin) | urlencode }}" title="{{ r.subject.name }} ilişkilerini listele">{{ hl(r.subject.name) }}</a>
+      <span class="ty">{{ r.subject.type }}</span>
+      <span class="arrow">—</span><span class="pred">{{ hl(r.predicate) }}</span><span class="arrow">→</span>
+      <a class="ent" href="/p/{{ p.slug }}/search?{{ dict(entity=r.object.key, origin=origin) | urlencode }}" title="{{ r.object.name }} ilişkilerini listele">{{ hl(r.object.name) }}</a>
+      <span class="ty">{{ r.object.type }}</span>
+      {% if r.origin == "wikidata" %}<span class="badge hyp">Wikidata</span>{% elif r.origin == "metadata" %}<span class="badge">arşiv metadata</span>{% endif %}
+      <a class="small" style="margin-left:auto" href="/p/{{ p.slug }}/graph?focus={{ r.subject.key | urlencode }}">grafikte →</a>
+    </div>
+    {% for s in r.sources[:2] %}
+    <div class="src">{% if s.sentence %}“{{ hl(s.sentence) }}”{% endif %}
+      <span class="doc">— {% if s.doc_id %}<a href="/p/{{ p.slug }}/docs/{{ s.doc_id }}">{{ s.doc }}</a>{% else %}{{ s.doc }}{% endif %}</span></div>
+    {% endfor %}
+    {% if r.sources | length > 2 %}
+    <details class="more"><summary>{{ r.sources | length - 2 }} kaynak daha</summary>
+      {% for s in r.sources[2:] %}
+      <div class="src">{% if s.sentence %}“{{ hl(s.sentence) }}”{% endif %}
+        <span class="doc">— {% if s.doc_id %}<a href="/p/{{ p.slug }}/docs/{{ s.doc_id }}">{{ s.doc }}</a>{% else %}{{ s.doc }}{% endif %}</span></div>
+      {% endfor %}
+    </details>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% if res.total > res.relations | length %}
+<div class="actions"><a class="btn secondary" href="{{ qs({'limit': limit * 2, 'entity': (res.entity.key if res.entity else '')}) }}">Daha fazla göster ({{ res.total - res.relations | length }} kaldı)</a></div>
+{% endif %}
+{% elif not res.entities %}
+<p class="muted">Hiçbir şey bulunamadı. Daha az veya farklı kelime dene.</p>
+{% endif %}
+{% endif %}
+{% endblock %}

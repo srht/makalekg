@@ -27,10 +27,11 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup, escape
 
 from ..config import ensure_dirs, env, load_dotenv
 from ..llm import get_llm, set_manual_broker
-from ..okg import extractor, oai, standards, wikidata
+from ..okg import extractor, oai, search as gsearch, standards, wikidata
 from ..okg.documents import SUPPORTED, UnsupportedFile, extract_text
 from ..okg.ontology import TEMPLATES, EntityType, Ontology, RelationType
 from ..okg.store import Project, create_project, list_projects
@@ -514,6 +515,84 @@ def _graph_payload(p: Project) -> dict[str, Any]:
 @app.get("/api/p/{slug}/graph")
 def graph_api(slug: str):
     return JSONResponse(_graph_payload(get_project(slug)))
+
+
+# ---------------------------------------------------------------- arama
+
+
+def _search(p: Project, q: str, entity: str, origin: str, limit: int) -> dict[str, Any]:
+    g = p.graph()
+    if entity and entity not in g["entities"]:
+        entity = ""
+    res = gsearch.search(g, q, entity=entity or None, origin=origin if origin in ("document", "metadata", "wikidata") else "",
+                         wikidata_source=wikidata.WIKIDATA_SOURCE, meta_suffix=oai.META_SUFFIX, limit=limit)
+    docs = {d["id"]: d["filename"] for d in p.documents()}
+    ents = g["entities"]
+    rows = []
+    for r in res["relations"]:
+        s, o = ents.get(r["subject"], {}), ents.get(r["object"], {})
+        rows.append({"id": r["id"], "predicate": r["predicate"], "origin": r["origin"],
+                     "subject": {"key": r["subject"], "name": s.get("name", r["subject"]), "type": s.get("type", "")},
+                     "object": {"key": r["object"], "name": o.get("name", r["object"]), "type": o.get("type", "")},
+                     "sources": [{"doc": _source_name(docs, x["doc_id"]),
+                                  "doc_id": x["doc_id"].removesuffix(oai.META_SUFFIX) if x["doc_id"] != wikidata.WIKIDATA_SOURCE else "",
+                                  "sentence": x.get("sentence", ""), "confidence": x.get("confidence")} for x in r["sources"]]})
+    entities = [{"key": e["key"], "name": e["name"], "type": e["type"], "description": e.get("description"),
+                 "degree": e["degree"]} for e in res["entities"]]
+    return {"query": q, "tokens": res["tokens"], "partial": res["partial"], "total": res["total"],
+            "entity": ({"key": entity, "name": ents[entity]["name"], "type": ents[entity]["type"]} if entity else None),
+            "relations": rows, "entities": entities}
+
+
+def _highlight(text: str, toks: list[str]) -> Markup:
+    out, last = [], 0
+    for a, b in gsearch.spans(text, toks):
+        out.append(escape(text[last:a]))
+        out.append(Markup("<mark>") + escape(text[a:b]) + Markup("</mark>"))
+        last = b
+    out.append(escape(text[last:]))
+    return Markup("").join(out)
+
+
+@app.get("/p/{slug}/search", response_class=HTMLResponse)
+def search_page(request: Request, slug: str, q: str = "", entity: str = "", origin: str = "", limit: int = 100):
+    p = get_project(slug)
+    limit = max(10, min(limit, 2000))
+    res = _search(p, q, entity, origin, limit) if (q.strip() or entity) else None
+    examples: dict[str, list[str]] = {"entities": [], "predicates": []}
+    if res is None:
+        g = p.graph()
+        deg: dict[str, int] = {}
+        preds: dict[str, int] = {}
+        for r in g["relations"].values():
+            for k in (r["subject"], r["object"]):
+                deg[k] = deg.get(k, 0) + 1
+            if not r["predicate"].startswith("WD:"):
+                preds[r["predicate"]] = preds.get(r["predicate"], 0) + 1
+        top = sorted(deg, key=lambda k: -deg[k])[:8]
+        examples = {"entities": [g["entities"][k]["name"] for k in top if k in g["entities"]],
+                    "predicates": [x.replace("_", " ").replace("İ", "i").lower() for x in sorted(preds, key=lambda k: -preds[k])[:6]]}
+    return page(request, "search.html", **project_ctx(p, "search"), res=res, q=q, origin=origin, limit=limit,
+                examples=examples, hl=lambda t: _highlight(t, res["tokens"] if res else []))
+
+
+@app.get("/api/p/{slug}/search")
+def search_api(slug: str, q: str = "", entity: str = "", origin: str = "", limit: int = 100):
+    return JSONResponse(_search(get_project(slug), q, entity, origin, max(1, min(limit, 2000))))
+
+
+@app.get("/p/{slug}/search.csv")
+def search_csv(slug: str, q: str = "", entity: str = "", origin: str = ""):
+    res = _search(get_project(slug), q, entity, origin, 100000)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["ozne", "ozne_turu", "iliski", "nesne", "nesne_turu", "kaynak", "kaynak_cumle", "guven"])
+    for r in res["relations"]:
+        for x in r["sources"] or [{}]:
+            w.writerow([r["subject"]["name"], r["subject"]["type"], r["predicate"], r["object"]["name"], r["object"]["type"],
+                        x.get("doc", ""), x.get("sentence", ""), x.get("confidence", "")])
+    return Response("\ufeff" + buf.getvalue(), media_type="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{slug}-arama.csv"'})
 
 
 @app.get("/api/p/{slug}/path")

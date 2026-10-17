@@ -24,6 +24,10 @@ knowledge graph kuran web uygulaması.
    tek istemde gruplanır (kopyala–yapıştır modunda az sayıda yapıştırma).
 4. **Graf:** etkileşimli ağ görünümü. Bir düğüme/oka tıklayınca ayrıntısı ve **hangi belgedeki hangi cümleden
    geldiği** görünür. İki varlık arasındaki bağlantı zincirini bulabilirsin.
+   **Ara** sayfası (her proje sayfasının üstündeki kutu da): birkaç kelime yaz, kelimelerin geçtiği ilişkiler
+   kaynak cümleleriyle listelenir. Kelimeler varlık adlarında, ilişki adlarında, türlerde ve cümlelerde aranır;
+   büyük/küçük harf, Türkçe karakter ve ek farkı sorun olmaz. Bir varlığa tıklayınca yalnızca onun ilişkileri
+   listelenir; sonuçlar CSV olarak indirilebilir (`/api/p/<proje>/search?q=...` JSON verir).
 5. **Açık knowledge graph (Wikidata):** varlıkları Wikidata kayıtlarıyla eşle, sonra eşlenen varlıklar arasında
    Wikidata'nın bildiği ilişkileri (ör. bir ülkenin bir örgüte üyeliği) grafa ekle. Bunlar belgelerden gelenlerden
    ayrı tutulur ve kesikli çizgiyle gösterilir. Yanlış eşlemeyi panelden kaldırabilir veya başka adayı seçebilirsin.
@@ -87,6 +91,7 @@ kg/okg/extractor.py   çıkarım istemi + deterministik doğrulamalar, ontoloji 
 kg/okg/store.py       proje deposu (data/projects/<proje>/), belge katkılarıyla idempotent graf, Neo4j aynası
 kg/okg/wikidata.py    Wikidata eşleme ve zenginleştirme
 kg/okg/oai.py         OAI-PMH istemcisi (DSpace oai_dc, ORE tam metin), metadata grafı
+kg/okg/search.py      grafta kelime araması (ilişki/varlık puanlama, vurgulama)
 kg/web/               FastAPI arayüzü, iş kuyruğu, kopyala–yapıştır aracısı, şablonlar
 kg/web/static/vendor/ vis-network 9.1.9 (MIT/Apache-2.0; CDN'e bağımlı olmamak için depoda)
 ```

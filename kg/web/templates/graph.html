@@ -10,7 +10,8 @@
 <div class="notice">Henüz grafa giren bir şey yok. <a href="/p/{{ p.slug }}/docs">Belgeler</a> sayfasından dosya yükleyip işle.</div>
 {% else %}
 <p class="lead">Bir düğüme veya oka tıkla: ayrıntısı ve <b>hangi cümleden geldiği</b> sağda görünür. Bir varlık <b>aradığında</b>
-  (veya düğüme çift tıkladığında) yalnızca o ve yakın çevresi gösterilir.</p>
+  (veya düğüme çift tıkladığında) yalnızca o ve yakın çevresi gösterilir.
+  İlişkileri liste hâlinde kelimeyle aramak için <a href="/p/{{ p.slug }}/search">Ara</a> sayfasını kullan.</p>
 
 <div class="graph-tools card">
   <input type="search" id="q" placeholder="Varlık ara…" list="nodeList" title="Bir varlık seçince yalnızca onun yakın çevresi gösterilir">
@@ -92,7 +93,11 @@
     edges: {smooth: {type: 'continuous'}, width: 1.2},
     physics: {stabilization: {iterations: 250}, barnesHut: {gravitationalConstant: -6000, springLength: 140}},
     interaction: {hover: true, tooltipDelay: 150}});
-  net.once('stabilizationIterationsDone', () => { net.setOptions({physics: false}); net.fit({maxZoomLevel: 1.1}); });
+  const startFocus = new URLSearchParams(location.search).get('focus');  // arama sayfasından "grafikte →"
+  net.once('stabilizationIterationsDone', () => {
+    net.setOptions({physics: false}); net.fit({maxZoomLevel: 1.1});
+    if (startFocus && byId[startFocus]) { document.getElementById('q').value = byId[startFocus].label; focusOn(startFocus); }
+  });
 
   // lejant + tür filtresi
   const hidden = new Set();

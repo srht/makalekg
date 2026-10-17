@@ -248,3 +248,30 @@ def test_oai_harvest_flow(client, monkeypatch, tmp_path):
     doc_id = next(x["id"] for x in st)
     page = c.get(f"/p/{slug}/docs/{doc_id}").text
     assert "Arşiv kaydı" in page and "dc:creator" in page
+
+
+def test_search_page(client):
+    import kg.okg.store as st
+    slug = _new_project(client, "Arama")
+    p = st.Project(slug)
+    doc = p.add_document("a.txt", b"x", "Ayse Yilmaz Ankara Universitesi'nde calisir. <b>kalin</b>")
+    ents = [{"type": "Kisi", "name": "Ayşe Yılmaz", "mention": "Ayse Yilmaz", "description": None},
+            {"type": "Kurum", "name": "Ankara Üniversitesi", "mention": "Ankara Universitesi", "description": None}]
+    p.add_extraction(doc["id"], ents, [{"subject_key": p.entity_key("Kisi", "Ayşe Yılmaz"), "predicate": "CALISIR",
+                                         "object_key": p.entity_key("Kurum", "Ankara Üniversitesi"),
+                                         "sentence": "Ayse Yilmaz Ankara Universitesi'nde calisir. <b>kalin</b>", "confidence": 0.9}], [])
+    r = client.get(f"/p/{slug}/search")
+    assert r.status_code == 200 and "Grafta ara" in r.text and "Ankara Üniversitesi" in r.text  # örnek çipler
+    r = client.get(f"/p/{slug}/search", params={"q": "ankara çalışır"})
+    assert r.status_code == 200
+    assert "1 ilişki bulundu" in r.text and "<mark>Ankara</mark>" in r.text
+    assert "<b>kalin</b>" not in r.text and "&lt;b&gt;kalin" in r.text  # kaynak cümle kaçışlı
+    api = client.get(f"/api/p/{slug}/search", params={"q": "yilmaz"}).json()
+    assert api["total"] == 1 and api["relations"][0]["sources"][0]["doc_id"] == doc["id"]
+    key = api["relations"][0]["subject"]["key"]
+    r = client.get(f"/p/{slug}/search", params={"entity": key})
+    assert "varlığının ilişkileri" in r.text and "1 ilişki bulundu" in r.text
+    csv_text = client.get(f"/p/{slug}/search.csv", params={"q": "ankara"}).text
+    assert "CALISIR" in csv_text and "Ayşe Yılmaz" in csv_text
+    assert "0 ilişki bulundu" in client.get(f"/p/{slug}/search", params={"q": "zzzz"}).text
+    assert client.get("/p/yok/search", params={"q": "a"}).status_code == 404

@@ -210,3 +210,42 @@ def test_wikidata_link_resumes_after_rate_limit(proj):
         assert out["linked"] == 2 and out["skipped"] == 1  # kalanlar eşlendi, ilki tekrar aranmadı
     finally:
         wikidata.SAVE_EVERY = old
+
+
+def _search_graph():
+    k = lambda t, n: f"{t}::{n.casefold()}"
+    ents = {
+        k("Kurum", "Ankara Üniversitesi"): {"name": "Ankara Üniversitesi", "type": "Kurum", "description": None, "mentions": []},
+        k("Kisi", "Ayşe Yılmaz"): {"name": "Ayşe Yılmaz", "type": "Kisi", "description": "Araştırmacı", "mentions": []},
+        k("Konu", "Yapay Zeka"): {"name": "Yapay Zeka", "type": "Konu", "description": None, "mentions": []},
+        k("Ulke", "Türkiye"): {"name": "Türkiye", "type": "Ulke", "description": None, "mentions": []},
+    }
+    rel = lambda s, p, o, sent, doc="d1": {"id": p.lower(), "subject": s, "predicate": p, "object": o,
+                                           "sources": [{"doc_id": doc, "sentence": sent, "confidence": 0.9}]}
+    rels = [
+        rel(k("Kisi", "Ayşe Yılmaz"), "CALISIR", k("Kurum", "Ankara Üniversitesi"), "Ayşe Yılmaz Ankara'da çalışıyor."),
+        rel(k("Kisi", "Ayşe Yılmaz"), "ARASTIRIR", k("Konu", "Yapay Zeka"), "Yılmaz yapay zekâ üzerine çalışıyor."),
+        rel(k("Kurum", "Ankara Üniversitesi"), "BULUNUR", k("Ulke", "Türkiye"), "Üniversite Türkiye'dedir.", "d2#meta"),
+    ]
+    return {"entities": ents, "relations": {f"{r['subject']}|{r['predicate']}|{r['object']}": r for r in rels}}
+
+
+def test_search_relations():
+    from kg.okg.search import search, tokenize
+    g = _search_graph()
+    assert tokenize("Ankara ve ÜNİVERSİTESİ") == ["ankara", "universitesi"]
+    res = search(g, "ankara üniversite")  # ek farkı + büyük/küçük harf
+    preds = [r["predicate"] for r in res["relations"]]
+    assert set(preds) == {"CALISIR", "BULUNUR"} and not res["partial"]
+    assert res["entities"][0]["name"] == "Ankara Üniversitesi"
+    # tüm kelimeleri içeren yoksa kısmi eşleşmeler
+    res = search(g, "yapay türkiye")
+    assert res["partial"] and {r["predicate"] for r in res["relations"]} == {"ARASTIRIR", "BULUNUR"}
+    # ilişki adı ve tür üzerinden
+    assert search(g, "araştırır")["relations"][0]["predicate"] == "ARASTIRIR"  # ilişki adı > açıklama
+    assert {r["predicate"] for r in search(g, "kisi")["relations"]} == {"CALISIR", "ARASTIRIR"}
+    # varlık süzgeci ve kaynak süzgeci
+    key = "Kisi::ayşe yılmaz"
+    assert len(search(g, "", entity=key)["relations"]) == 2
+    assert [r["predicate"] for r in search(g, "ankara", origin="metadata")["relations"]] == ["BULUNUR"]
+    assert search(g, "olmayankelime")["total"] == 0
