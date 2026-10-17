@@ -868,7 +868,14 @@ class GlinerModel:
         p = Path(name_or_path)
         local = p.is_dir()
         log.info("GLiNER modeli yükleniyor: %s%s", name_or_path, "" if local else " (ilk seferde indirilir)")
-        m = GLiNER.from_pretrained(str(p) if local else str(name_or_path), local_files_only=local)
+        try:
+            m = GLiNER.from_pretrained(str(p) if local else str(name_or_path), local_files_only=local)
+        except (ValueError, ImportError) as exc:
+            if any(k in str(exc) for k in ("tiktoken", "protobuf", "sentencepiece", "SentencePiece")):
+                raise RuntimeError("GLiNER tokenizer'ı yüklenemedi: sunucuda 'protobuf' ve 'sentencepiece' paketleri eksik. "
+                                   "Docker imajını güncel requirements-ml.txt ile yeniden derle (Dokploy'da yeniden dağıt) "
+                                   "veya konteynerde: pip install protobuf sentencepiece") from exc
+            raise
         return cls(m, str(name_or_path))
 
     def predict(self, texts: list[str], labels: list[str], threshold: float = 0.5, batch_size: int = 8) -> list[list[dict[str, Any]]]:
