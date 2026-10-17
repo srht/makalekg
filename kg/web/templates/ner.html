@@ -115,6 +115,11 @@
       <div><label>İstek başına belge</label><input type="number" name="per_request" value="{{ a.per_request }}" min="1" max="100"></div>
       <div><label>İstek başına en fazla karakter <span class="muted">(0 = otomatik)</span></label><input type="number" name="max_chars" value="{{ a.max_chars }}" min="0" step="1000"></div>
     </div>
+    <div class="grid cols-4">
+      <div><label>Belge başına en fazla karakter <span class="muted">(0 = kesme)</span></label><input type="number" name="doc_chars" value="{{ a.doc_chars }}" min="0" step="1000"></div>
+      <div style="grid-column: span 3"><p class="small muted" style="margin:28px 0 0">Uzun belgeler (tam metin tezler) etiketleme için baştan bu uzunlukta kesilir;
+        böylece istek başına belge sayısı korunur. "Otomatik" istek sınırı = istek başına belge × belge sınırı.</p></div>
+    </div>
     {{ doc_filter(a) }}
     <div class="grid cols-4">
       <div><label>Etiketleme modeli <span class="muted">(boş = varsayılan)</span></label><input type="text" name="model" value="{{ a.model }}" placeholder="{{ llm.label }}" {{ 'disabled' if llm.manual }}></div>
@@ -268,12 +273,14 @@
     let timer = null;
     const upd = async () => {
       const q = new URLSearchParams({step: f.dataset.step});
-      ['selection', 'source', 'keyword', 'min_chars', 'n', 'limit', 'scope', 'count_mode'].forEach(k => { if (f.elements[k]) q.set(k, f.elements[k].value); });
+      ['selection', 'source', 'keyword', 'min_chars', 'n', 'limit', 'scope', 'count_mode', 'per_request', 'doc_chars', 'max_chars'].forEach(k => { if (f.elements[k]) q.set(k, f.elements[k].value); });
       if (f.elements.skip_done) q.set('skip_done', f.elements.skip_done.checked ? '1' : '0');
       try {
         const d = await (await fetch('/api/p/{{ p.slug }}/ner/preview?' + q, {credentials: 'same-origin'})).json();
         out.textContent = `Bu ayarlarla ${d.will_process} belge işlenecek (uygun: ${d.available}` +
-          (d.in_dataset !== undefined ? `, veri setinde zaten ${d.in_dataset}` : '') + ').';
+          (d.in_dataset !== undefined ? `, veri setinde zaten ${d.in_dataset}` : '') + ')' +
+          (d.requests !== undefined ? ` · ${d.requests} istek` + (d.truncated ? ` · ${d.truncated} uzun belge kesilecek` : '') +
+            (d.limited_by_chars ? ` · istek başına ${d.request_chars.toLocaleString('tr')} karakter sınırı yüzünden istek sayısı arttı` : '') : '') + '.';
       } catch (e) { out.textContent = ''; }
     };
     f.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(upd, 300); });

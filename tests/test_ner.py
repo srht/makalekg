@@ -395,7 +395,8 @@ def test_ner_settings_web(webc):
     page = c.get(f"/p/{slug}/ner").text
     assert 'name="n" value="4"' in page and 'value="kesici"' in page and "Ayarlar kaydedildi" not in page
     prev = c.get(f"/api/p/{slug}/ner/preview", params={"step": "annotate", "keyword": "kesici", "n": 4, "count_mode": "total"}).json()
-    assert prev == {"available": 2, "will_process": 2, "in_dataset": 0}
+    assert {k: prev[k] for k in ("available", "will_process", "in_dataset", "requests")} == \
+        {"available": 2, "will_process": 2, "in_dataset": 0, "requests": 1}
     r = c.post(f"/p/{slug}/ner/train", data={"csrf": tok, "action": "save", "kind": "sozluk", "epochs": "7", "lr": "1e-5"},
                follow_redirects=False)
     t = ner.get_settings(ner.load_config(p))["train"]
@@ -403,3 +404,49 @@ def test_ner_settings_web(webc):
     c.post(f"/p/{slug}/ner/apply", data={"csrf": tok, "_bools": "skip_done", "action": "save", "limit": "5", "threshold": "0.7"})
     assert ner.get_settings(ner.load_config(p))["apply"]["limit"] == 5 and ner.load_config(p)["threshold"] == 0.7
     assert c.get(f"/api/p/{slug}/ner/preview", params={"step": "apply", "limit": 2}).json()["will_process"] == 2
+
+
+def test_request_planning_respects_per_request(proj):
+    from kg.okg import ner
+    p, ids = proj
+    long_ids = []
+    for i in range(20):  # 20 uzun "tez" (30 bin karakter)
+        t = ("Transformatör PSCAD ile incelendi. " * 900)[:30000]
+        long_ids.append(p.add_document(f"tez{i}.txt", t.encode(), t)["id"])
+    s = ner.get_settings(ner.load_config(p))["annotate"]
+    s.update(per_request=10, doc_chars=6000, max_chars=0)
+    est = ner.estimate_requests(p, long_ids, s)
+    assert est["requests"] == 2 and est["truncated"] == 20 and not est["limited_by_chars"]
+    s.update(doc_chars=0)  # kesme yok → karakter sınırı istek sayısını artırır
+    est = ner.estimate_requests(p, long_ids, s)
+    assert est["requests"] > 2 and est["limited_by_chars"]
+    t = ner.truncate_text("Bir. İki cümle. Üç cümle burada.", 20)
+    assert t == "Bir. İki cümle." and ner.truncate_text("kısa", 0) == "kısa"
+    # etiketleme gerçekten 10'arlı gruplar gönderir ve veri setine kesilmiş metin yazılır
+    cfg = ner.load_config(p)
+    cfg["labels"] = [{"name": n, "description": d} for n, d in ner.DOMAIN_PRESETS["elektrik"]["labels"]]
+    ner.save_config(p, cfg)
+    llm = FakeLLM(responder)
+    ner.annotate(p, llm, doc_ids=long_ids, per_request=10)
+    assert len(llm.calls) == 2
+    assert all(len(r["text"]) <= 6000 for r in ner.load_dataset(p))
+
+
+def test_group_split_on_max_tokens(proj):
+    from kg.llm import LLMError
+    from kg.okg import ner
+    p, ids = proj
+    cfg = ner.load_config(p)
+    cfg["labels"] = [{"name": n, "description": d} for n, d in ner.DOMAIN_PRESETS["elektrik"]["labels"]]
+    ner.save_config(p, cfg)
+    sizes = []
+
+    def picky(system, user, schema):
+        n = user.count("=== METİN ")
+        sizes.append(n)
+        if n > 2:
+            raise LLMError("max_tokens sınırına ulaşıldı")
+        return responder(system, user, schema)
+
+    res = ner.annotate(p, FakeLLM(picky), doc_ids=list(ids.values()), per_request=6)
+    assert res["added"] == 6 and sizes[0] == 6 and max(sizes[1:]) <= 3

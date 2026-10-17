@@ -75,13 +75,14 @@ class AnthropicLLM:
         self.client = anthropic.Anthropic(max_retries=4, **({"api_key": key} if key else {}))
         self.model_name = model or setting("LLM_MODEL", DEFAULT_ANTHROPIC_MODEL)
         self.effort = effort
+        self.max_tokens = 16000
 
     def _create(self, **kwargs: Any) -> Any:
         # fallbacks="default": güvenlik sınıflandırıcısı bir isteği reddederse sunucu,
         # reddin kategorisine göre önerilen modelde aynı isteği yeniden çalıştırır.
         response = self.client.beta.messages.create(
             model=self.model_name,
-            max_tokens=16000,
+            max_tokens=getattr(self, "max_tokens", 16000),
             thinking={"type": "adaptive"},
             betas=["server-side-fallback-2026-07-01"],
             fallbacks="default",

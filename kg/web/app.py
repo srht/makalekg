@@ -1003,7 +1003,8 @@ async def ner_apply(request: Request, slug: str):
 
 @app.get("/api/p/{slug}/ner/preview")
 def ner_preview(slug: str, step: str = "annotate", selection: str = "", source: str = "", keyword: str = "",
-                min_chars: int = -1, n: int = -1, limit: int = -1, scope: str = "", count_mode: str = "", skip_done: str = ""):
+                min_chars: int = -1, n: int = -1, limit: int = -1, scope: str = "", count_mode: str = "", skip_done: str = "",
+                per_request: int = -1, doc_chars: int = -1, max_chars: int = -1):
     """Formdaki seçimle kaç belgenin işleneceğini (kaydetmeden) hesaplar."""
     p = get_project(slug)
     if step not in ("annotate", "apply"):
@@ -1011,14 +1012,17 @@ def ner_preview(slug: str, step: str = "annotate", selection: str = "", source: 
     s = ner.get_settings(ner.load_config(p))[step]
     s.update(ner.clean_settings(step, {k: v for k, v in {"selection": selection, "source": source, "keyword": keyword,
                                                          "min_chars": min_chars, "n": n, "limit": limit, "scope": scope,
-                                                         "count_mode": count_mode, "skip_done": skip_done or None}.items()
+                                                         "count_mode": count_mode, "skip_done": skip_done or None,
+                                                         "per_request": per_request, "doc_chars": doc_chars,
+                                                         "max_chars": max_chars}.items()
                                        if v not in ("", -1, None)}))
     labeled = {r["doc_id"] for r in ner.load_dataset(p)}
     if step == "annotate":
         want = max(0, s["n"] - len(labeled)) if s["count_mode"] == "total" else s["n"]
         ids = ner.select_docs(p, exclude=labeled, selection=s["selection"], source=s["source"], keyword=s["keyword"],
                               min_chars=s["min_chars"], seed=s["seed"])
-        return {"available": len(ids), "will_process": min(want, len(ids)), "in_dataset": len(labeled)}
+        est = ner.estimate_requests(p, ids[:want], s, manual=llm_status()["manual"])
+        return {"available": len(ids), "will_process": min(want, len(ids)), "in_dataset": len(labeled), **est}
     exclude = set() if s["scope"] == "all" else labeled
     only = (lambda d: not d.get("ner")) if s["scope"] == "new" or s["skip_done"] else None
     ids = ner.select_docs(p, exclude=exclude, selection=s["selection"], source=s["source"], keyword=s["keyword"],

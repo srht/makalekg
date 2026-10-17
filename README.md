@@ -72,9 +72,12 @@ Binlerce DSpace kaydını tek tek dil modeline göndermek yerine (Belgeler → "
 
 Her adımın ayarları projede saklanır ve sayfadan değiştirilebilir ("Yalnızca ayarları kaydet"): belge sayısı
 ("bu kadar yeni belge ekle" veya "veri setini toplam bu sayıya tamamla"), belge seçimi (arşiv/yüklenen, anahtar kelime,
-en az uzunluk, rastgele/ilk/son/en uzun/en kısa), istek başına belge ve karakter, etiketleme modeli, Batch API;
+en az uzunluk, rastgele/ilk/son/en uzun/en kısa), istek başına belge ve karakter, belge başına en fazla karakter
+(uzun tam metinler etiketleme için baştan kesilir, böylece istek başına belge sayısı korunur; varsayılan 6000),
+etiketleme modeli, Batch API;
 eğitimde model türü, test payı, tur, yığın boyutu, öğrenme oranları; uygulamada kapsam, en fazla belge, eşik ve süzgeçler.
-Sayfa, seçilen ayarlarla kaç belgenin işleneceğini anında gösterir. Veri setinden belge çıkarılabilir veya veri seti
+Sayfa, seçilen ayarlarla kaç belgenin ve kaç isteğin gideceğini anında gösterir. Bir isteğin yanıtı sığmazsa
+grup otomatik olarak ikiye bölünüp yeniden denenir. Veri setinden belge çıkarılabilir veya veri seti
 rastgele N belgeye indirilebilir.
 
 Komut satırı: `python -m kg.okg.ner_cli run <proje> --domain elektrik --n 200` (ayrıca `labels`, `annotate`,

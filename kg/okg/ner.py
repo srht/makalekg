@@ -180,12 +180,12 @@ def load_config(project: Project) -> dict[str, Any]:
 
 DEFAULT_SETTINGS: dict[str, dict[str, Any]] = {
     "annotate": {"n": 200, "count_mode": "add", "selection": "random", "source": "all", "keyword": "", "min_chars": 40,
-                 "per_request": 10, "max_chars": 0, "batch_api": True, "add_to_graph": True, "model": "", "seed": 7},
+                 "per_request": 10, "doc_chars": 6000, "max_chars": 0, "batch_api": True, "add_to_graph": True, "model": "", "seed": 7},
     "train": {"kind": "auto", "epochs": 5, "batch_size": 8, "lr": 5e-6, "others_lr": 1e-5, "test_ratio": 0.2},
     "apply": {"scope": "unlabeled", "limit": 0, "selection": "first", "source": "all", "keyword": "", "min_chars": 0,
               "skip_done": False, "batch_docs": 16},
 }
-_LIMITS = {"n": (1, 20000), "min_chars": (0, 100000), "per_request": (1, 100), "max_chars": (0, 400000), "seed": (0, 10**9),
+_LIMITS = {"n": (1, 20000), "min_chars": (0, 100000), "per_request": (1, 100), "doc_chars": (0, 200000), "max_chars": (0, 1000000), "seed": (0, 10**9),
            "epochs": (1, 100), "batch_size": (1, 128), "lr": (1e-8, 1e-2), "others_lr": (1e-8, 1e-2),
            "test_ratio": (0.0, 0.5), "limit": (0, 10**7), "batch_docs": (1, 512)}
 _CHOICES = {"count_mode": ("add", "total"), "selection": ("random", "first", "last", "longest", "shortest"),
@@ -562,14 +562,51 @@ def annotation_prompt(cfg: dict[str, Any], texts: list[str]) -> str:
     return f"Varlık türleri:\n{types}\n\n{body}"
 
 
-def plan_groups(texts: dict[str, str], max_chars: int, per_request: int) -> list[list[str]]:
+MAX_REQUEST_CHARS = 400000  # ~100 bin token: tek istemin üst sınırı (otomatik modda)
+
+
+def truncate_text(text: str, limit: int) -> str:
+    """Etiketleme için belgeyi cümle sonunda keser (0 = kesme). Özet/metadata kayıtları zaten kısadır;
+    tam metin tezlerde ilk bölüm eğitim verisi için yeterlidir ve istek sayısını patlatmaz."""
+    if not limit or len(text) <= limit:
+        return text
+    cut = text[:limit]
+    m = max(cut.rfind(". "), cut.rfind(".\n"), cut.rfind("\n\n"))
+    return cut[:m + 1] if m > limit * 0.6 else cut
+
+
+def request_char_limit(s: dict[str, Any], manual: bool = False) -> int:
+    """İstek başına karakter sınırı: elle verilmişse o; yoksa istek başına belge × belge sınırı (üst sınırlı)."""
+    if s.get("max_chars"):
+        return s["max_chars"]
+    if s.get("doc_chars"):
+        return min(MAX_REQUEST_CHARS, s["per_request"] * s["doc_chars"] + 2000)
+    return MANUAL_GROUP_CHARS if manual else API_GROUP_CHARS
+
+
+def estimate_requests(project: Project, doc_ids: list[str], s: dict[str, Any], manual: bool = False) -> dict[str, Any]:
+    """Belgelerin kayıtlı uzunluklarına göre kaç istek gideceğini hesaplar (metin okumadan)."""
+    chars = {d["id"]: d.get("chars", 0) for d in project.documents()}
+    lim = s["doc_chars"] or 0
+    sizes = {d: min(chars.get(d, 0), lim) if lim else chars.get(d, 0) for d in doc_ids}
+    max_chars = request_char_limit(s, manual)
+    groups = plan_groups(sizes, max_chars, max(1, s["per_request"]))
+    return {"requests": len(groups), "request_chars": max_chars,
+            "truncated": sum(1 for d in doc_ids if lim and chars.get(d, 0) > lim),
+            "limited_by_chars": len(groups) > math.ceil(len(doc_ids) / max(1, s["per_request"])) if doc_ids else False}
+
+
+def plan_groups(texts: dict[str, str] | dict[str, int], max_chars: int, per_request: int) -> list[list[str]]:
+    """Belgeleri istek başına en fazla per_request belge ve max_chars karakter olacak şekilde gruplar
+    (değerler metin veya uzunluk olabilir)."""
     groups, cur, size = [], [], 0
     for d, t in texts.items():
-        if cur and (size + len(t) > max_chars or len(cur) >= per_request):
+        n = t if isinstance(t, int) else len(t)
+        if cur and (size + n > max_chars or len(cur) >= per_request):
             groups.append(cur)
             cur, size = [], 0
         cur.append(d)
-        size += len(t)
+        size += n
     if cur:
         groups.append(cur)
     return groups
@@ -613,7 +650,7 @@ def annotate(project: Project, llm: LLM, n: int | None = None, per_request: int 
         doc_ids = select_docs(project, exclude=done, n=want, selection=s["selection"], source=s["source"],
                               keyword=s["keyword"], min_chars=s["min_chars"], seed=s["seed"]) if want else []
     ids = [d for d in doc_ids if d not in done]
-    texts = {d: project.text(d) for d in ids}
+    texts = {d: truncate_text(project.text(d), s["doc_chars"]) for d in ids}
     texts = {d: t for d, t in texts.items() if t.strip()}
     if not texts:
         log.info("Etiketlenecek yeni belge yok (veri setinde %d belge)", len(done))
@@ -622,8 +659,12 @@ def annotate(project: Project, llm: LLM, n: int | None = None, per_request: int 
         llm.model_name = s["model"]  # etiketleme için farklı (ör. daha ucuz) model
     add_to_graph = s["add_to_graph"]
     per_request = s["per_request"]
-    max_chars = s["max_chars"] or (MANUAL_GROUP_CHARS if is_manual(llm) else API_GROUP_CHARS)
+    max_chars = request_char_limit(s, is_manual(llm))
     groups = plan_groups(texts, max_chars, max(1, per_request))
+    if len(groups) > math.ceil(len(texts) / per_request):
+        log.info("Not: bazı istekler karakter sınırı (%d) nedeniyle %d belgeden az içeriyor; "
+                 "'belge başına en fazla karakter' veya 'istek başına en fazla karakter' ayarını değiştirebilirsin",
+                 max_chars, per_request)
     schema = _annotation_schema(labels)
     if use_batch_api is None:
         use_batch_api = s["batch_api"] and hasattr(llm, "client") and hasattr(getattr(llm, "client"), "messages")
@@ -634,14 +675,11 @@ def annotate(project: Project, llm: LLM, n: int | None = None, per_request: int 
     if use_batch_api:
         answers = _anthropic_batch(project, llm, cfg, groups, texts, schema, poll_seconds)
     else:
+        if hasattr(llm, "max_tokens"):
+            llm.max_tokens = max(getattr(llm, "max_tokens", 0) or 0, 32000)  # çok belgeli istekte uzun yanıt
         for i, g in enumerate(groups, 1):
             log.info("İstek %d/%d (%d belge)", i, len(groups), len(g))
-            try:
-                res = llm.complete_json(ANNOTATE_SYSTEM, annotation_prompt(cfg, [texts[d] for d in g]), schema)
-            except Exception as exc:  # bir grubun hatası tüm işi düşürmesin
-                log.warning("İstek %d başarısız: %s", i, exc)
-                continue
-            answers.update(_answers_by_doc(g, res.model_dump()))
+            answers.update(_annotate_group(llm, cfg, g, texts, schema))
 
     added, n_ent, n_rej = 0, 0, 0
     model_name = getattr(llm, "model_name", "llm")
@@ -657,6 +695,22 @@ def annotate(project: Project, llm: LLM, n: int | None = None, per_request: int 
     save_dataset(project, list(by_doc_rows.values()))
     log.info("Veri setine %d belge eklendi: %d varlık geçişi, %d doğrulanamayan öneri", added, n_ent, n_rej)
     return {"added": added, "entities": n_ent, "rejected": n_rej, "total_docs": len(by_doc_rows)}
+
+
+def _annotate_group(llm: LLM, cfg: dict[str, Any], group: list[str], texts: dict[str, str],
+                    schema: type[BaseModel]) -> dict[str, list[dict[str, Any]]]:
+    """Bir grubu etiketler; yanıt sığmazsa (max_tokens) veya bozuksa grubu ikiye bölüp yeniden dener."""
+    try:
+        res = llm.complete_json(ANNOTATE_SYSTEM, annotation_prompt(cfg, [texts[d] for d in group]), schema)
+        return _answers_by_doc(group, res.model_dump())
+    except Exception as exc:  # bir grubun hatası tüm işi düşürmesin
+        if len(group) > 1 and ("max_tokens" in str(exc) or "şema" in str(exc)):
+            half = len(group) // 2
+            log.info("%d belgelik istek sığmadı; ikiye bölünüp yeniden deneniyor", len(group))
+            return {**_annotate_group(llm, cfg, group[:half], texts, schema),
+                    **_annotate_group(llm, cfg, group[half:], texts, schema)}
+        log.warning("%d belgelik istek başarısız: %s", len(group), exc)
+        return {}
 
 
 def _answers_by_doc(group: list[str], data: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
@@ -688,7 +742,7 @@ def _anthropic_batch(project: Project, llm: Any, cfg: dict[str, Any], groups: li
         gmap = {f"g{i}": g for i, g in enumerate(groups)}
         fmt = {"type": "json_schema", "schema": strict_json_schema(schema)}
         requests = [{"custom_id": cid, "params": {
-            "model": llm.model_name, "max_tokens": 16000, "system": ANNOTATE_SYSTEM,
+            "model": llm.model_name, "max_tokens": 32000, "system": ANNOTATE_SYSTEM,
             "messages": [{"role": "user", "content": annotation_prompt(cfg, [texts[d] for d in g])}],
             "output_config": {"effort": getattr(llm, "effort", "high"), "format": fmt},
         }} for cid, g in gmap.items()]
@@ -704,19 +758,32 @@ def _anthropic_batch(project: Project, llm: Any, cfg: dict[str, Any], groups: li
         log.info("Paket işleniyor: %d bitti, %d sürüyor", c.succeeded + c.errored + c.canceled + c.expired, c.processing)
         time.sleep(poll_seconds)
     answers: dict[str, list[dict[str, Any]]] = {}
+    retry: list[list[str]] = []
     for entry in client.messages.batches.results(batch_id):
         g = [d for d in gmap.get(entry.custom_id, []) if d in texts]
         if len(g) != len(gmap.get(entry.custom_id, [])) or not g:
             continue
         if entry.result.type != "succeeded":
             log.warning("İstek %s: %s", entry.custom_id, entry.result.type)
+            retry.append(g)
             continue
-        text = next((blk.text for blk in entry.result.message.content if blk.type == "text"), "")
+        msg = entry.result.message
+        text = next((blk.text for blk in msg.content if blk.type == "text"), "")
         try:
+            if getattr(msg, "stop_reason", None) == "max_tokens":
+                raise ValueError("max_tokens")
             answers.update(_answers_by_doc(g, schema.model_validate_json(text).model_dump()))
         except Exception as exc:
-            log.warning("İstek %s yanıtı okunamadı: %s", entry.custom_id, exc)
+            log.warning("İstek %s yanıtı okunamadı (%s); bölünüp anlık istekle yeniden denenecek", entry.custom_id, exc)
+            retry.append(g)
     state_path.unlink(missing_ok=True)
+    if retry and hasattr(llm, "complete_json"):
+        if hasattr(llm, "max_tokens"):
+            llm.max_tokens = max(getattr(llm, "max_tokens", 0) or 0, 32000)
+        for g in retry:
+            half = max(1, len(g) // 2)
+            for part in ([g[:half], g[half:]] if len(g) > 1 else [g]):
+                answers.update(_annotate_group(llm, cfg, part, texts, schema))
     return answers
 
 
