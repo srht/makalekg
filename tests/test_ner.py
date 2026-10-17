@@ -192,3 +192,42 @@ def test_ner_web(webc):
     assert "NER" in c.get(f"/p/{slug}/docs").text
     r = c.post(f"/p/{slug}/ner/model-upload", data={"csrf": tok}, files={"file": ("m.zip", b"bozuk", "application/zip")}, follow_redirects=False)
     assert "err=" in r.headers["location"]
+
+
+def test_gliner_train_apply_offline(proj, tmp_path):
+    """GLiNER kuruluysa: internetsiz küçük rastgele bir omurgayla eğitim → kaydet → yükle → uygula zinciri çalışır."""
+    pytest.importorskip("gliner")
+    pytest.importorskip("torch")
+    from gliner import GLiNER, GLiNERConfig
+    from tokenizers import Tokenizer, models, normalizers, pre_tokenizers, processors, trainers
+    from transformers import BertConfig, BertModel, BertTokenizerFast
+    from kg.okg import ner
+
+    bb = tmp_path / "tiny-bert"
+    tok = Tokenizer(models.WordPiece(unk_token="[UNK]"))
+    tok.normalizer = normalizers.BertNormalizer(lowercase=True)
+    tok.pre_tokenizer = pre_tokenizers.BertPreTokenizer()
+    tok.train_from_iterator(list(DOCS.values()) * 5, trainers.WordPieceTrainer(
+        vocab_size=600, special_tokens=["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"]))
+    tok.post_processor = processors.TemplateProcessing(
+        single="[CLS] $A [SEP]", pair="[CLS] $A [SEP] $B [SEP]",
+        special_tokens=[("[CLS]", tok.token_to_id("[CLS]")), ("[SEP]", tok.token_to_id("[SEP]"))])
+    fast = BertTokenizerFast(tokenizer_object=tok, unk_token="[UNK]", pad_token="[PAD]", cls_token="[CLS]",
+                             sep_token="[SEP]", mask_token="[MASK]")
+    fast.save_pretrained(bb)
+    BertModel(BertConfig(vocab_size=fast.vocab_size, hidden_size=32, num_hidden_layers=1, num_attention_heads=2,
+                         intermediate_size=64)).save_pretrained(bb)
+    base = tmp_path / "gliner-base"
+    GLiNER.from_config(GLiNERConfig(model_name=str(bb), hidden_size=32, max_width=6)).save_pretrained(base)
+
+    p, ids = proj
+    cfg = ner.load_config(p)
+    cfg["labels"] = [{"name": n, "description": d} for n, d in ner.DOMAIN_PRESETS["elektrik"]["labels"]]
+    cfg["base_model"] = str(base)
+    ner.save_config(p, cfg)
+    ner.annotate(p, FakeLLM(responder), doc_ids=[ids[n] for n in ("a.txt", "b.txt", "c.txt", "d.txt", "e.txt")])
+    m = ner.train(p, kind="gliner", epochs=1)
+    assert m["model_kind"] == "gliner" and "test" in m and "base" in m
+    assert (ner.ner_dir(p) / "model" / "gliner_config.json").exists()
+    out = ner.apply(p, threshold=0.3)
+    assert out["docs"] == 1
