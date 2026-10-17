@@ -181,6 +181,18 @@
       <div><label>Tur (epoch)</label><input type="number" name="epochs" value="{{ t.epochs }}" min="1" max="100"></div>
       <div><label>Yığın boyutu (batch)</label><input type="number" name="batch_size" value="{{ t.batch_size }}" min="1" max="128"></div>
     </div>
+    {% if st.gliner %}
+    <div class="grid cols-4">
+      <div><label>Kodlayıcı (GLiNER)</label><select name="freeze">
+        <option value="auto" {{ 'selected' if t.freeze == 'auto' }}>Belleğe göre otomatik</option>
+        <option value="yes" {{ 'selected' if t.freeze == 'yes' }}>Dondur (az bellek, ~3–4 GB)</option>
+        <option value="no" {{ 'selected' if t.freeze == 'no' }}>Tam ince ayar (~7 GB)</option></select></div>
+      <div style="grid-column: span 3"><p class="small {{ 'bad-text' if mem.available and mem.available < 2.7 * 1024**3 else 'muted' }}" style="margin:28px 0 0">
+        Sunucuda kullanılabilir bellek: {% if mem.available %}<b>{{ '%.1f' | format(mem.available / 1024**3) }} GB</b>{% if mem.total %} / {{ '%.1f' | format(mem.total / 1024**3) }} GB{% endif %}{% else %}bilinmiyor{% endif %}.
+        GLiNER modelini yüklemek ~2,5 GB ister{% if mem.available and mem.available < 2.7 * 1024**3 %} — bu sunucuda yetmeyebilir; sözlük modelini seç veya GPU'lu makinede eğitip .zip yükle{% endif %}.
+        Eğitim ve uygulama ayrı bir süreçte çalışır; bellek yetmezse sunucu düşmez, iş açıklamalı hata verir.</p></div>
+    </div>
+    {% endif %}
     <details style="margin-top:6px"><summary>Öğrenme oranları (GLiNER)</summary>
       <div class="grid cols-4">
         <div><label>Kodlayıcı öğrenme oranı</label><input type="text" name="lr" value="{{ t.lr }}"></div>

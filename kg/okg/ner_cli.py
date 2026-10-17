@@ -15,6 +15,7 @@ import argparse
 import json
 import logging
 import sys
+from pathlib import Path
 
 from ..config import load_dotenv
 from ..llm import get_llm
@@ -50,19 +51,36 @@ def cmd_annotate(p: Project, a: argparse.Namespace) -> None:
     llm = get_llm()
     extra = {k: v for k, v in {"count_mode": "total" if a.total else None, "source": a.source,
                                "keyword": a.keyword}.items() if v is not None}
-    print(json.dumps(ner.annotate(p, llm, n=a.n, per_request=a.per_request,
-                                  use_batch_api=None if not a.no_batch_api else False, **extra), ensure_ascii=False))
+    res = ner.annotate(p, llm, n=a.n, per_request=a.per_request,
+                       use_batch_api=None if not a.no_batch_api else False, **extra)
+    print(json.dumps(res, ensure_ascii=False))
+    return res
 
 
 def cmd_train(p: Project, a: argparse.Namespace) -> None:
     m = ner.train(p, kind=a.kind, epochs=a.epochs, test_ratio=a.test_ratio,
                   **({"batch_size": a.batch_size} if a.batch_size else {}))
     print(json.dumps({k: m.get(k) for k in ("model_kind", "n_train", "n_test", "base", "test")}, ensure_ascii=False, indent=1))
+    return m
 
 
 def cmd_apply(p: Project, a: argparse.Namespace) -> None:
     extra = {k: v for k, v in {"scope": "all" if a.all else None, "limit": a.limit}.items() if v is not None}
-    print(json.dumps(ner.apply(p, threshold=a.threshold, **extra), ensure_ascii=False))
+    res = ner.apply(p, threshold=a.threshold, **extra)
+    print(json.dumps(res, ensure_ascii=False))
+    return res
+
+
+def cmd_try(p: Project, _a: argparse.Namespace) -> dict:
+    """stdin'deki metni eğitilmiş modelle etiketler (web arayüzündeki "Dene" için ayrı süreçte çalışır)."""
+    model = ner.trained_model(p)
+    if model is None:
+        raise SystemExit("Henüz eğitilmiş model yok")
+    cfg = ner.load_config(p)
+    text = sys.stdin.read()[:20000]
+    out = {"entities": model.predict([text], ner.label_names(cfg), float(cfg.get("threshold", 0.5)))[0]}
+    print(json.dumps(out, ensure_ascii=False))
+    return out
 
 
 def cmd_status(p: Project, _a: argparse.Namespace) -> None:
@@ -72,12 +90,14 @@ def cmd_status(p: Project, _a: argparse.Namespace) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     load_dotenv()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", datefmt="%H:%M:%S")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s", datefmt="%H:%M:%S",
+                        stream=sys.stderr)
     ap = argparse.ArgumentParser(prog="python -m kg.okg.ner_cli", description="Hızlı varlık modeli boru hattı")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("labels", "annotate", "train", "apply", "run", "status"):
+    for name in ("labels", "annotate", "train", "apply", "run", "status", "try"):
         s = sub.add_parser(name)
         s.add_argument("project")
+        s.add_argument("--result-file", default=None, help="sonucu JSON olarak bu dosyaya yaz")
         if name in ("labels", "run"):
             s.add_argument("--domain", default="")
             s.add_argument("--preset", default="", choices=[""] + list(ner.DOMAIN_PRESETS))
@@ -107,7 +127,10 @@ def main(argv: list[str] | None = None) -> None:
         cmd_train(p, a)
         cmd_apply(p, a)
     else:
-        {"labels": cmd_labels, "annotate": cmd_annotate, "train": cmd_train, "apply": cmd_apply, "status": cmd_status}[a.cmd](p, a)
+        res = {"labels": cmd_labels, "annotate": cmd_annotate, "train": cmd_train, "apply": cmd_apply,
+               "status": cmd_status, "try": cmd_try}[a.cmd](p, a)
+        if a.result_file:
+            Path(a.result_file).write_text(json.dumps(res, ensure_ascii=False, default=str), encoding="utf-8")
 
 
 if __name__ == "__main__":

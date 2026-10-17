@@ -450,3 +450,36 @@ def test_group_split_on_max_tokens(proj):
 
     res = ner.annotate(p, FakeLLM(picky), doc_ids=list(ids.values()), per_request=6)
     assert res["added"] == 6 and sizes[0] == 6 and max(sizes[1:]) <= 3
+
+
+def test_subprocess_worker_and_oom(proj, monkeypatch):
+    from kg.okg import ner
+    p, ids = proj
+    cfg = ner.load_config(p)
+    cfg["labels"] = [{"name": n, "description": d} for n, d in ner.DOMAIN_PRESETS["elektrik"]["labels"]]
+    ner.save_config(p, cfg)
+    ner.annotate(p, FakeLLM(responder), doc_ids=[ids[n] for n in ("a.txt", "b.txt", "c.txt", "d.txt", "e.txt")])
+    ner.train(p, kind="sozluk")
+    lines = []
+    out = ner.run_in_subprocess(p, "try", stdin="Yeni inverter PSCAD ile denendi.", timeout=120, on_line=lines.append)
+    assert {e["text"] for e in out["entities"]} >= {"inverter", "PSCAD"}
+    res = ner.run_in_subprocess(p, "apply", timeout=120)
+    assert res["docs"] == 1
+
+    class Killed:  # bellek taşınca işletim sisteminin öldürdüğü süreç
+        def __init__(self, *a, **k):
+            self.stdout = iter(["GLiNER modeli yükleniyor\n"])
+            self.stdin = None
+
+        def wait(self, timeout=None):
+            return -9
+
+        def poll(self):
+            return -9
+
+    import subprocess
+    monkeypatch.setattr(subprocess, "Popen", Killed)
+    with pytest.raises(ner.WorkerKilled, match="Bellek yetersiz"):
+        ner.run_in_subprocess(p, "train")
+    mem = ner.memory_info()
+    assert mem["total"] is None or mem["total"] > 0

@@ -862,7 +862,7 @@ def ner_page(request: Request, slug: str):
     ds_rows = [{"doc_id": r["doc_id"], "name": names.get(r["doc_id"], r["doc_id"]), "n": len(r["entities"]),
                 "rejected": len(r.get("rejected", [])), "source": r.get("source", "")} for r in ner.load_dataset(p)]
     return page(request, "ner.html", **project_ctx(p, "ner"), cfg=cfg, st=ner.status(p), presets=ner.DOMAIN_PRESETS,
-                ns=ner.get_settings(cfg), ds_rows=ds_rows,
+                ns=ner.get_settings(cfg), ds_rows=ds_rows, mem=ner.memory_info(),
                 gmap=ner.gliner_label_map(cfg) if cfg["labels"] else {},
                 matched=ner.match_preset(cfg.get("domain") or "") if cfg.get("domain") else None)
 
@@ -966,6 +966,27 @@ async def _ner_settings_form(request: Request, p: Project, step: str) -> tuple[s
     return str(form.get("action", "run")), merged
 
 
+def _uses_gliner(p: Project, step: str) -> bool:
+    if not ner.gliner_available():
+        return False
+    if step == "train":
+        kind = ner.get_settings(ner.load_config(p))["train"]["kind"]
+        return kind in ("gliner", "auto")
+    return ner.status(p).metrics.get("model_kind") == "gliner"
+
+
+def _ner_heavy(p: Project, step: str) -> Any:
+    """GLiNER kullanan adımları ayrı süreçte çalıştırır (bellek taşarsa web sunucusu düşmesin); sözlük modeli süreç içinde."""
+    if not _uses_gliner(p, step):
+        return ner.train(p) if step == "train" else ner.apply(p)
+    wlog = logging.getLogger("kg.ner.worker")
+    noisy = ("HTTP Request", "Warning: You are sending", "warnings.warn", "FutureWarning", "UserWarning")
+    res = ner.run_in_subprocess(p, step, on_line=lambda l: None if any(n in l for n in noisy) else wlog.info(l))
+    if step == "apply":
+        p.sync_neo4j()
+    return res
+
+
 @app.post("/p/{slug}/ner/annotate")
 async def ner_annotate(request: Request, slug: str):
     p = get_project(slug)
@@ -989,7 +1010,7 @@ async def ner_train(request: Request, slug: str):
     action, _ = await _ner_settings_form(request, p, "train")
     if action == "save":
         return RedirectResponse(f"/p/{slug}/ner?ok=Ayarlar kaydedildi#model", status_code=303)
-    return _ner_job(p, "ner-train", "Varlık modeli eğitiliyor", lambda: ner.train(p))
+    return _ner_job(p, "ner-train", "Varlık modeli eğitiliyor", lambda: _ner_heavy(p, "train"))
 
 
 @app.post("/p/{slug}/ner/apply")
@@ -998,7 +1019,7 @@ async def ner_apply(request: Request, slug: str):
     action, _ = await _ner_settings_form(request, p, "apply")
     if action == "save":
         return RedirectResponse(f"/p/{slug}/ner?ok=Ayarlar kaydedildi#apply", status_code=303)
-    return _ner_job(p, "ner-apply", "Varlık modeli belgelere uygulanıyor", lambda: ner.apply(p))
+    return _ner_job(p, "ner-apply", "Varlık modeli belgelere uygulanıyor", lambda: _ner_heavy(p, "apply"))
 
 
 @app.get("/api/p/{slug}/ner/preview")
@@ -1089,11 +1110,16 @@ async def ner_try(request: Request, slug: str):
     data = await request.json()
     check_csrf(request, str(data.get("csrf", "")))
     text = str(data.get("text", ""))[:20000]
+    import asyncio
+    if ner.status(p).metrics.get("model_kind") == "gliner" and ner.gliner_available():
+        try:  # GLiNER ayrı süreçte: web sunucusu modeli belleğe almaz
+            return await asyncio.to_thread(ner.run_in_subprocess, p, "try", stdin=text, timeout=300)
+        except Exception as exc:
+            raise HTTPException(500, str(exc)[:500])
     model = ner.trained_model(p)
     if model is None:
         raise HTTPException(400, "Henüz eğitilmiş model yok")
     cfg = ner.load_config(p)
-    import asyncio
     preds = await asyncio.to_thread(model.predict, [text], ner.label_names(cfg), float(cfg.get("threshold", 0.5)))
     return {"entities": preds[0]}
 

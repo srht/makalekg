@@ -83,7 +83,12 @@ rastgele N belgeye indirilebilir.
 Komut satırı: `python -m kg.okg.ner_cli run <proje> --domain elektrik --n 200` (ayrıca `labels`, `annotate`,
 `train`, `apply`, `status`). Docker imajı GLiNER'i (torch CPU) `WITH_GLINER=1` ile kurar (varsayılan; imaja ~1 GB ekler,
 `WITH_GLINER=0` ile kapatılır). Temel model ilk kullanımda Hugging Face'ten indirilir ve `data/hf` altında kalır.
-CPU'da 200 belgelik eğitim yaklaşık 15–60 dakika sürer ve 4–6 GB bellek ister; eğitim sırasında diğer işler sırada bekler.
+GLiNER eğitimi, uygulaması ve "Dene" ayrı bir Python sürecinde çalışır: bellek yetmezse yalnızca o süreç ölür,
+web sunucusu ayakta kalır ve iş "Bellek yetersiz" açıklamasıyla biter. Yaklaşık bellek: modeli yükleme ~2,5 GB,
+kodlayıcı dondurulmuş eğitim ~3–4 GB, tam ince ayar ~7 GB ("Kodlayıcı: belleğe göre otomatik" varsayılan; sayfa
+kullanılabilir belleği gösterir). İlk indirmeden sonra temel model, dönüştürülmüş tokenizer'ıyla `data/hf/gliner-local`
+altına kaydedilir; sonraki yüklemeler daha hızlı ve az bellekli olur. CPU'da 200 belgelik eğitim 15–60 dakika sürebilir;
+eğitim sırasında diğer işler sırada bekler.
 
 ## Dil modeli: API'siz (kopyala–yapıştır) veya API
 

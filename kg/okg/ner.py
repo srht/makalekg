@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import random
 import re
 import shutil
@@ -181,7 +182,8 @@ def load_config(project: Project) -> dict[str, Any]:
 DEFAULT_SETTINGS: dict[str, dict[str, Any]] = {
     "annotate": {"n": 200, "count_mode": "add", "selection": "random", "source": "all", "keyword": "", "min_chars": 40,
                  "per_request": 10, "doc_chars": 6000, "max_chars": 0, "batch_api": True, "add_to_graph": True, "model": "", "seed": 7},
-    "train": {"kind": "auto", "epochs": 5, "batch_size": 8, "lr": 5e-6, "others_lr": 1e-5, "test_ratio": 0.2},
+    "train": {"kind": "auto", "epochs": 5, "batch_size": 8, "lr": 5e-6, "others_lr": 1e-5, "test_ratio": 0.2,
+              "freeze": "auto"},
     "apply": {"scope": "unlabeled", "limit": 0, "selection": "first", "source": "all", "keyword": "", "min_chars": 0,
               "skip_done": False, "batch_docs": 16},
 }
@@ -189,7 +191,7 @@ _LIMITS = {"n": (1, 20000), "min_chars": (0, 100000), "per_request": (1, 100), "
            "epochs": (1, 100), "batch_size": (1, 128), "lr": (1e-8, 1e-2), "others_lr": (1e-8, 1e-2),
            "test_ratio": (0.0, 0.5), "limit": (0, 10**7), "batch_docs": (1, 512)}
 _CHOICES = {"count_mode": ("add", "total"), "selection": ("random", "first", "last", "longest", "shortest"),
-            "source": ("all", "archive", "upload"), "kind": ("auto", "gliner", "sozluk"), "scope": ("unlabeled", "all", "new")}
+            "source": ("all", "archive", "upload"), "kind": ("auto", "gliner", "sozluk"), "freeze": ("auto", "yes", "no"), "scope": ("unlabeled", "all", "new")}
 
 
 def get_settings(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -791,12 +793,45 @@ def _anthropic_batch(project: Project, llm: Any, cfg: dict[str, Any], groups: li
 
 
 def gliner_available() -> bool:
+    """GLiNER kurulu mu? (torch'u web sürecine yüklememek için yalnızca paketin varlığına bakar.)"""
+    import importlib.util
+    return importlib.util.find_spec("gliner") is not None and importlib.util.find_spec("torch") is not None
+
+
+def memory_info() -> dict[str, int | None]:
+    """Konteynerin bellek sınırı ve kullanılabilir bellek (bayt). cgroup v2/v1, yoksa /proc/meminfo."""
+    limit = used = None
+    for lim_p, cur_p in (("/sys/fs/cgroup/memory.max", "/sys/fs/cgroup/memory.current"),
+                         ("/sys/fs/cgroup/memory/memory.limit_in_bytes", "/sys/fs/cgroup/memory/memory.usage_in_bytes")):
+        try:
+            raw = Path(lim_p).read_text().strip()
+            if raw != "max" and int(raw) < 1 << 60:
+                limit = int(raw)
+                used = int(Path(cur_p).read_text().strip())
+            break
+        except (OSError, ValueError):
+            continue
+    total = avail = None
     try:
-        import gliner  # noqa: F401
-        import torch  # noqa: F401
-        return True
-    except Exception:
-        return False
+        info = {l.split(":")[0]: int(l.split()[1]) * 1024 for l in Path("/proc/meminfo").read_text().splitlines()
+                if l.split(":")[0] in ("MemTotal", "MemAvailable")}
+        total, avail = info.get("MemTotal"), info.get("MemAvailable")
+    except (OSError, ValueError, IndexError):
+        pass
+    if limit is not None:
+        total = min(limit, total or limit)
+        avail = min(limit - (used or 0), avail or limit)
+    return {"total": total, "available": avail}
+
+
+GLINER_LOAD_BYTES = int(2.5 * 1024**3)   # temel modeli yükleyip çalıştırmak için yaklaşık
+GLINER_FULL_TRAIN_BYTES = 7 * 1024**3    # kodlayıcıyla birlikte tam ince ayar için yaklaşık
+
+
+def local_base_dir(name: str) -> Path:
+    from .. import config
+    safe = re.sub(r"[^\w.-]+", "__", name)
+    return Path(config.DATA_DIR) / "hf" / "gliner-local" / safe
 
 
 class GazetteerModel:
@@ -867,7 +902,13 @@ class GlinerModel:
         from gliner import GLiNER
         p = Path(name_or_path)
         local = p.is_dir()
+        cached = None if local else local_base_dir(str(name_or_path))
+        if cached is not None and (cached / "gliner_config.json").exists():
+            p, local = cached, True  # daha önce indirilip hazır tokenizer'la kaydedilmiş kopya (hızlı, az bellek)
         log.info("GLiNER modeli yükleniyor: %s%s", name_or_path, "" if local else " (ilk seferde indirilir)")
+        mem = memory_info()
+        if mem["available"]:
+            log.info("Kullanılabilir bellek: %.1f GB", mem["available"] / 1024**3)
         try:
             m = GLiNER.from_pretrained(str(p) if local else str(name_or_path), local_files_only=local)
         except (ValueError, ImportError) as exc:
@@ -876,6 +917,12 @@ class GlinerModel:
                                    "Docker imajını güncel requirements-ml.txt ile yeniden derle (Dokploy'da yeniden dağıt) "
                                    "veya konteynerde: pip install protobuf sentencepiece") from exc
             raise
+        if cached is not None and not local:
+            try:  # tokenizer dönüşümü (yavaş, bellek yoğun) bir daha yapılmasın
+                m.save_pretrained(str(cached))
+                log.info("Temel model yerel kopyası kaydedildi: %s", cached)
+            except Exception as exc:
+                log.warning("Yerel kopya kaydedilemedi: %s", exc)
         return cls(m, str(name_or_path))
 
     def predict(self, texts: list[str], labels: list[str], threshold: float = 0.5, batch_size: int = 8) -> list[list[dict[str, Any]]]:
@@ -896,8 +943,21 @@ class GlinerModel:
         return [resolve_overlaps(o) for o in out]
 
     def train(self, train_rows: list[dict[str, Any]], out_dir: Path, epochs: int = 5, batch_size: int = 8,
-              lr: float = 5e-6, others_lr: float = 1e-5, progress: Callable[[str], None] | None = None) -> None:
+              lr: float = 5e-6, others_lr: float = 1e-5, progress: Callable[[str], None] | None = None,
+              freeze_encoder: bool = False) -> None:
         import torch
+
+        if freeze_encoder:
+            # Kodlayıcı (mdeberta, ~280M parametre) sabit kalır; yalnız GLiNER'in üst katmanları öğrenir.
+            # Bellek ~4 kat azalır; az veride ezberlemeyi de sınırlar.
+            freeze = getattr(self.model, "freeze_component", None)
+            if freeze:
+                freeze("text_encoder")
+            else:
+                for n, prm in self.model.named_parameters():
+                    if "token_rep_layer" in n or "bert_layer" in n:
+                        prm.requires_grad_(False)
+            log.info("Kodlayıcı donduruldu (az bellekli eğitim)")
 
         examples = [ex for r in train_rows for ex in to_gliner(r["text"], r["entities"])]
         examples = [{**ex, "ner": [[a, b, self.label_map.get(lab, lab)] for a, b, lab in ex["ner"]]}
@@ -1028,7 +1088,13 @@ def train(project: Project, kind: str | None = None, epochs: int | None = None, 
         if evaluate_base and test_rows:
             log.info("Eğitimden önce temel model (sıfır örnekle) test ediliyor")
             metrics["base"] = evaluate(m, test_rows, labels, th)
-        m.train(train_rows, d / "model", epochs=epochs, batch_size=s["batch_size"], lr=s["lr"], others_lr=s["others_lr"])
+        avail = memory_info()["available"]
+        freeze = s["freeze"] == "yes" or (s["freeze"] == "auto" and avail is not None and avail < GLINER_FULL_TRAIN_BYTES)
+        if s["freeze"] == "auto" and freeze:
+            log.info("Bellek tam ince ayar için az (%.1f GB); kodlayıcı dondurularak eğitilecek", (avail or 0) / 1024**3)
+        m.train(train_rows, d / "model", epochs=epochs, batch_size=s["batch_size"], lr=s["lr"], others_lr=s["others_lr"],
+                freeze_encoder=freeze)
+        metrics["frozen_encoder"] = freeze
         metrics["base_model"] = base
         metrics.update(epochs=epochs, batch_size=s["batch_size"], lr=s["lr"], others_lr=s["others_lr"])
     else:
@@ -1213,3 +1279,65 @@ def status(project: Project) -> Status:
                   n_docs=len(docs), n_unlabeled=sum(1 for d in docs if d["id"] not in labeled),
                   n_applied=sum(1 for d in docs if d.get("ner") == "model"), gliner=gliner_available(),
                   pending_batch=_read(ner_dir(project) / "state.json", {}).get("batch_id"))
+
+
+# ---------------------------------------------------------------- ayrı süreçte çalıştırma
+
+
+class WorkerKilled(RuntimeError):
+    pass
+
+
+def run_in_subprocess(project: Project, command: str, extra_args: list[str] | None = None, stdin: str | None = None,
+                      timeout: float | None = None, on_line: Callable[[str], None] | None = None) -> Any:
+    """GLiNER işlerini (eğitim, uygulama, deneme) ayrı bir Python sürecinde çalıştırır. Model belleği web
+    sunucusundan ayrı kalır; bellek yetmezse yalnızca bu süreç ölür ve anlaşılır bir hata döner."""
+    import subprocess
+    import sys
+    import tempfile
+
+    from .. import config
+
+    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as fh:
+        result_path = Path(fh.name)
+    env_vars = {**os.environ, "KG_DATA_DIR": str(config.DATA_DIR), "PYTHONUNBUFFERED": "1",
+                "TOKENIZERS_PARALLELISM": "false"}
+    cmd = [sys.executable, "-m", "kg.okg.ner_cli", command, project.slug, "--result-file", str(result_path),
+           *(extra_args or [])]
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env_vars,
+                            cwd=str(Path(__file__).resolve().parents[2]))
+    tail: list[str] = []
+    try:
+        if stdin is not None:
+            proc.stdin.write(stdin)
+            proc.stdin.close()
+        t0 = time.time()
+        for line in proc.stdout:
+            line = line.rstrip()
+            if not line:
+                continue
+            tail = (tail + [line])[-30:]
+            if on_line:
+                on_line(line)
+            if timeout and time.time() - t0 > timeout:
+                proc.kill()
+                raise TimeoutError("İşlem zaman aşımına uğradı")
+        code = proc.wait(timeout=timeout)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    try:
+        if code == 0:
+            return json.loads(result_path.read_text(encoding="utf-8") or "null")
+    finally:
+        result_path.unlink(missing_ok=True)
+    if code in (-9, 137):
+        mem = memory_info()
+        have = f" (kullanılabilir: {mem['available'] / 1024**3:.1f} GB)" if mem.get("available") else ""
+        raise WorkerKilled("Bellek yetersiz: işlem işletim sistemi tarafından durduruldu" + have + ". GLiNER modelini "
+                           "yüklemek ~2,5 GB, kodlayıcı donmuş eğitim ~3–4 GB, tam eğitim ~7 GB ister. Sunucuya/konteynere "
+                           "daha fazla bellek ver, eğitimde 'kodlayıcıyı dondur'u seç, yığın boyutunu küçült ya da modeli "
+                           "GPU'lu bir makinede eğitip .zip olarak yükle.")
+    last = next((l for l in reversed(tail) if "Error" in l or "error" in l or "hata" in l.lower()), tail[-1] if tail else "")
+    raise RuntimeError(f"Alt işlem başarısız (kod {code}): {last}")
