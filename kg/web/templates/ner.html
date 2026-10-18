@@ -199,7 +199,7 @@
         <div><label>Kodlayıcı öğrenme oranı</label><input type="text" name="lr" value="{{ t.lr }}"></div>
         <div><label>Diğer katmanlar</label><input type="text" name="others_lr" value="{{ t.others_lr }}"></div>
       </div>
-      <p class="small muted">Varsayılanlar GLiNER ince ayar örneğindeki değerlerdir (5e-6 ve 1e-5). Az veride yükseltmek hızlı ama ezberlemeye açık.</p>
+      <p class="small muted">Varsayılan 1e-5 ve 5e-5. Model az öğreniyorsa (F1 düşük, eğitim kaybı yüksek) turu artır; test F1 düşerken eğitim kaybı düşüyorsa ezberliyordur, turu azalt.</p>
     </details>
     <div class="actions"><button name="action" value="run" {{ 'disabled' if st.dataset.n_docs < 2 }}>Eğit</button>
       <button name="action" value="save" class="secondary">Yalnızca ayarları kaydet</button></div>
@@ -210,10 +210,26 @@
     <span class="muted small">{{ m.trained_at or m.uploaded_at }}{% if m.base_model %} · temel: {{ m.base_model }}{% endif %}{% if m.epochs %} · {{ m.epochs }} tur{% endif %}{% if m.n_train %} · {{ m.n_train }} eğitim belgesi{% endif %}{% if m.n_entries %} · {{ m.n_entries }} ifade{% endif %}</span></h3>
   {% if m.test %}
   <div class="table-wrap"><table>
-    <tr><th>Test ({{ m.n_test }} belge)</th><th class="num">Kesinlik</th><th class="num">Duyarlılık</th><th class="num">F1</th></tr>
-    {% if m.base %}<tr><td>Temel model (eğitimsiz)</td><td class="num">{{ m.base.micro.precision }}</td><td class="num">{{ m.base.micro.recall }}</td><td class="num">{{ m.base.micro.f1 }}</td></tr>{% endif %}
-    <tr><td><b>Eğitilmiş model</b></td><td class="num">{{ m.test.micro.precision }}</td><td class="num">{{ m.test.micro.recall }}</td><td class="num"><b>{{ m.test.micro.f1 }}</b></td></tr>
+    <tr><th>Test ({{ m.n_test }} belge{% if m.test.threshold %}, eşik {{ m.test.threshold }}{% endif %})</th><th class="num">Kesinlik</th><th class="num">Duyarlılık</th><th class="num">F1</th>
+      <th class="num" title="Aynı tür ve aralığı çakışan tahminler de doğru sayılır (ör. 'güç transformatörü' ~ 'transformatörü')">Esnek F1</th></tr>
+    {% if m.base %}<tr><td>Temel model (eğitimsiz)</td><td class="num">{{ m.base.micro.precision }}</td><td class="num">{{ m.base.micro.recall }}</td><td class="num">{{ m.base.micro.f1 }}</td><td class="num">{{ m.base.partial.f1 if m.base.partial else '—' }}</td></tr>{% endif %}
+    <tr><td><b>Eğitilmiş model</b></td><td class="num">{{ m.test.micro.precision }}</td><td class="num">{{ m.test.micro.recall }}</td><td class="num"><b>{{ m.test.micro.f1 }}</b></td><td class="num">{{ m.test.partial.f1 if m.test.partial else '—' }}</td></tr>
   </table></div>
+  {% if m.test.sweep %}
+  <details style="margin-top:8px" open><summary>Eşiğe göre F1{% if m.test.best_threshold != cfg.threshold %} — <b>önerilen eşik {{ m.test.best_threshold }}</b>{% endif %}</summary>
+    <div class="table-wrap"><table>
+      <tr><th>Eşik</th>{% for th, v in m.test.sweep.items() %}<th class="num">{{ th }}</th>{% endfor %}</tr>
+      <tr><td>Kesinlik</td>{% for th, v in m.test.sweep.items() %}<td class="num">{{ v.precision }}</td>{% endfor %}</tr>
+      <tr><td>Duyarlılık</td>{% for th, v in m.test.sweep.items() %}<td class="num">{{ v.recall }}</td>{% endfor %}</tr>
+      <tr><td>F1</td>{% for th, v in m.test.sweep.items() %}<td class="num">{% if th | float == m.test.best_threshold %}<b>{{ v.f1 }}</b>{% else %}{{ v.f1 }}{% endif %}</td>{% endfor %}</tr>
+    </table></div>
+    {% if m.test.best_threshold != cfg.threshold %}
+    <form method="post" action="/p/{{ p.slug }}/ner/threshold" class="actions"><input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="threshold" value="{{ m.test.best_threshold }}"><button class="secondary small-btn">Eşiği {{ m.test.best_threshold }} yap</button>
+      <span class="small muted">Şu an: {{ cfg.threshold }}. Düşük eşik daha çok varlık bulur (duyarlılık ↑), yüksek eşik daha kesin olanları (kesinlik ↑).</span></form>
+    {% endif %}
+  </details>
+  {% endif %}
   <details style="margin-top:8px"><summary>Türlere göre</summary>
     <div class="table-wrap"><table>
       <tr><th>Tür</th><th class="num">Kesinlik</th><th class="num">Duyarlılık</th><th class="num">F1</th><th class="num">Örnek</th></tr>
@@ -221,6 +237,9 @@
     </table></div></details>
   <p class="small muted">Kesinlik: modelin bulduklarının ne kadarı dil modeliyle aynı. Duyarlılık: dil modelinin bulduklarının ne kadarını yakaladı.</p>
   {% endif %}
+  <form method="post" action="/p/{{ p.slug }}/ner/evaluate" class="actions"><input type="hidden" name="csrf" value="{{ csrf }}">
+    <button class="secondary small-btn">{{ 'Yeniden değerlendir' if m.test else 'Modeli test belgelerinde değerlendir' }}</button>
+    <span class="small muted">Yüklenen (Colab) modeller için de: dil modeli etiketleriyle karşılaştırır, eşiğe göre F1 tablosu çıkarır.</span></form>
   <div class="row-inline" style="margin-top:10px">
     <input type="text" id="tryText" placeholder="Denemek için bir cümle yaz…">
     <button type="button" class="secondary" id="tryBtn">Dene</button>

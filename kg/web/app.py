@@ -978,7 +978,7 @@ def _uses_gliner(p: Project, step: str) -> bool:
 def _ner_heavy(p: Project, step: str) -> Any:
     """GLiNER kullanan adımları ayrı süreçte çalıştırır (bellek taşarsa web sunucusu düşmesin); sözlük modeli süreç içinde."""
     if not _uses_gliner(p, step):
-        return ner.train(p) if step == "train" else ner.apply(p)
+        return {"train": ner.train, "apply": ner.apply, "evaluate": ner.evaluate_current}[step](p)
     wlog = logging.getLogger("kg.ner.worker")
     noisy = ("HTTP Request", "Warning: You are sending", "warnings.warn", "FutureWarning", "UserWarning")
     res = ner.run_in_subprocess(p, step, on_line=lambda l: None if any(n in l for n in noisy) else wlog.info(l))
@@ -1020,6 +1020,23 @@ async def ner_apply(request: Request, slug: str):
     if action == "save":
         return RedirectResponse(f"/p/{slug}/ner?ok=Ayarlar kaydedildi#apply", status_code=303)
     return _ner_job(p, "ner-apply", "Varlık modeli belgelere uygulanıyor", lambda: _ner_heavy(p, "apply"))
+
+
+@app.post("/p/{slug}/ner/evaluate")
+def ner_evaluate(request: Request, slug: str, csrf: str = Form(...)):
+    check_csrf(request, csrf)
+    p = get_project(slug)
+    return _ner_job(p, "ner-evaluate", "Model test belgelerinde değerlendiriliyor", lambda: _ner_heavy(p, "evaluate"))
+
+
+@app.post("/p/{slug}/ner/threshold")
+def ner_threshold(request: Request, slug: str, csrf: str = Form(...), threshold: float = Form(...)):
+    check_csrf(request, csrf)
+    p = get_project(slug)
+    cfg = ner.load_config(p)
+    cfg["threshold"] = min(0.95, max(0.05, threshold))
+    ner.save_config(p, cfg)
+    return RedirectResponse(f"/p/{slug}/ner?ok=Eşik {cfg['threshold']} olarak kaydedildi#model", status_code=303)
 
 
 @app.get("/api/p/{slug}/ner/preview")

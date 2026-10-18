@@ -182,7 +182,7 @@ def load_config(project: Project) -> dict[str, Any]:
 DEFAULT_SETTINGS: dict[str, dict[str, Any]] = {
     "annotate": {"n": 200, "count_mode": "add", "selection": "random", "source": "all", "keyword": "", "min_chars": 40,
                  "per_request": 10, "doc_chars": 6000, "max_chars": 0, "batch_api": True, "add_to_graph": True, "model": "", "seed": 7},
-    "train": {"kind": "auto", "epochs": 5, "batch_size": 8, "lr": 5e-6, "others_lr": 1e-5, "test_ratio": 0.2,
+    "train": {"kind": "auto", "epochs": 10, "batch_size": 8, "lr": 1e-5, "others_lr": 5e-5, "test_ratio": 0.2,
               "freeze": "auto"},
     "apply": {"scope": "unlabeled", "limit": 0, "selection": "first", "source": "all", "keyword": "", "min_chars": 0,
               "skip_done": False, "batch_docs": 16},
@@ -1029,12 +1029,19 @@ def trained_model(project: Project) -> Any | None:
 # ---------------------------------------------------------------- değerlendirme
 
 
-def evaluate(model: Any, rows: list[dict[str, Any]], labels: list[str], threshold: float = 0.5) -> dict[str, Any]:
-    """Dil modeli etiketlerine göre tam eşleşme (aralık + tür) kesinlik / duyarlılık / F1."""
-    if not rows:
-        return {}
-    preds = model.predict([r["text"] for r in rows], labels, threshold)
+SWEEP_THRESHOLDS = (0.2, 0.3, 0.4, 0.5, 0.6, 0.7)
+
+
+def _prf(a: int, b: int, c: int) -> dict[str, float]:
+    p = a / (a + b) if a + b else 0.0
+    r = a / (a + c) if a + c else 0.0
+    return {"precision": round(p, 3), "recall": round(r, 3), "f1": round(2 * p * r / (p + r), 3) if p + r else 0.0,
+            "support": a + c}
+
+
+def _score(rows: list[dict[str, Any]], preds: list[list[dict[str, Any]]], labels: list[str]) -> dict[str, Any]:
     tp = fp = fn = 0
+    ptp = 0  # esnek: aynı türde ve aralığı çakışan (ör. "güç transformatörü" ~ "transformatörü")
     per: dict[str, list[int]] = {l: [0, 0, 0] for l in labels}
     for r, ps in zip(rows, preds):
         gold = {(e["start"], e["end"], e["label"]) for e in r["entities"] if e["label"] in labels}
@@ -1046,14 +1053,40 @@ def evaluate(model: Any, rows: list[dict[str, Any]], labels: list[str], threshol
         for x in gold - pred:
             per[x[2]][2] += 1
         tp, fp, fn = tp + len(pred & gold), fp + len(pred - gold), fn + len(gold - pred)
+        free = sorted(gold)
+        for ps_, pe, pl in sorted(pred):
+            hit = next((g for g in free if g[2] == pl and ps_ < g[1] and g[0] < pe), None)
+            if hit:
+                free.remove(hit)
+                ptp += 1
+    return {"micro": _prf(tp, fp, fn), "partial": _prf(ptp, len_pred(preds) - ptp, len_gold(rows, labels) - ptp),
+            "per_label": {l: _prf(*v) for l, v in per.items() if sum(v)}}
 
-    def prf(a: int, b: int, c: int) -> dict[str, float]:
-        p = a / (a + b) if a + b else 0.0
-        r = a / (a + c) if a + c else 0.0
-        return {"precision": round(p, 3), "recall": round(r, 3), "f1": round(2 * p * r / (p + r), 3) if p + r else 0.0,
-                "support": a + c}
 
-    return {"micro": prf(tp, fp, fn), "per_label": {l: prf(*v) for l, v in per.items() if sum(v)}, "n_docs": len(rows)}
+def len_pred(preds: list[list[dict[str, Any]]]) -> int:
+    return sum(len({(e["start"], e["end"], e["label"]) for e in ps}) for ps in preds)
+
+
+def len_gold(rows: list[dict[str, Any]], labels: list[str]) -> int:
+    return sum(len({(e["start"], e["end"], e["label"]) for e in r["entities"] if e["label"] in labels}) for r in rows)
+
+
+def evaluate(model: Any, rows: list[dict[str, Any]], labels: list[str], threshold: float = 0.5) -> dict[str, Any]:
+    """Dil modeli etiketlerine göre kesinlik / duyarlılık / F1.
+
+    micro: tam eşleşme (aralık + tür birebir); partial: aynı tür ve aralık çakışıyor (sınır farklarını affeder).
+    sweep: farklı eşiklerde tam eşleşme F1 (tahmin bir kez en düşük eşikle yapılır, sonra güvene göre süzülür);
+    best_threshold: en yüksek F1'i veren eşik."""
+    if not rows:
+        return {}
+    low = min(threshold, *SWEEP_THRESHOLDS)
+    preds = model.predict([r["text"] for r in rows], labels, low)
+    out = _score(rows, [[e for e in ps if e.get("score", 1.0) >= threshold] for ps in preds], labels)
+    sweep = {}
+    for th in SWEEP_THRESHOLDS:
+        sweep[str(th)] = _score(rows, [[e for e in ps if e.get("score", 1.0) >= th] for ps in preds], labels)["micro"]
+    best = max(sweep, key=lambda k: (sweep[k]["f1"], -abs(float(k) - threshold)))
+    return {**out, "n_docs": len(rows), "threshold": threshold, "sweep": sweep, "best_threshold": float(best)}
 
 
 # ---------------------------------------------------------------- eğitim
@@ -1109,6 +1142,27 @@ def train(project: Project, kind: str | None = None, epochs: int | None = None, 
     _write(d / "metrics.json", metrics)
     _model_cache.clear()
     return metrics
+
+
+def evaluate_current(project: Project) -> dict[str, Any]:
+    """Mevcut modeli (ör. Colab'da eğitilip yüklenmiş) veri setinin test belgelerinde değerlendirir.
+    Test ayrımı eğitim dosyası dışa aktarılırken kullanılanla aynıdır (aynı tohum ve oran)."""
+    cfg = load_config(project)
+    model = trained_model(project)
+    if model is None:
+        raise ValueError("Değerlendirilecek model yok")
+    ratio = get_settings(cfg)["train"]["test_ratio"] or 0.2
+    _, test_rows = split_dataset(load_dataset(project), ratio)
+    if not test_rows:
+        raise ValueError("Test için yeterli etiketli belge yok (en az 5 gerekir)")
+    labels = label_names(cfg)
+    log.info("Model %d test belgesinde değerlendiriliyor", len(test_rows))
+    res = evaluate(model, test_rows, labels, float(cfg.get("threshold", 0.5)))
+    d = ner_dir(project)
+    meta = _read(d / "metrics.json", {})
+    meta.update(test=res, n_test=len(test_rows), evaluated_at=time.strftime("%Y-%m-%d %H:%M"))
+    _write(d / "metrics.json", meta)
+    return {"f1": res["micro"]["f1"], "partial_f1": res["partial"]["f1"], "best_threshold": res["best_threshold"]}
 
 
 # ---------------------------------------------------------------- uygulama ve graf

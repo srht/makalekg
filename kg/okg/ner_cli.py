@@ -83,6 +83,12 @@ def cmd_try(p: Project, _a: argparse.Namespace) -> dict:
     return out
 
 
+def cmd_evaluate(p: Project, _a: argparse.Namespace) -> dict:
+    res = ner.evaluate_current(p)
+    print(json.dumps(res, ensure_ascii=False))
+    return res
+
+
 def cmd_status(p: Project, _a: argparse.Namespace) -> None:
     st = ner.status(p)
     print(json.dumps(st.__dict__, ensure_ascii=False, indent=1, default=str))
@@ -94,7 +100,7 @@ def main(argv: list[str] | None = None) -> None:
                         stream=sys.stderr)
     ap = argparse.ArgumentParser(prog="python -m kg.okg.ner_cli", description="Hızlı varlık modeli boru hattı")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("labels", "annotate", "train", "apply", "run", "status", "try"):
+    for name in ("labels", "annotate", "train", "apply", "run", "status", "try", "evaluate"):
         s = sub.add_parser(name)
         s.add_argument("project")
         s.add_argument("--result-file", default=None, help="sonucu JSON olarak bu dosyaya yaz")
@@ -128,7 +134,7 @@ def main(argv: list[str] | None = None) -> None:
         cmd_apply(p, a)
     else:
         res = {"labels": cmd_labels, "annotate": cmd_annotate, "train": cmd_train, "apply": cmd_apply,
-               "status": cmd_status, "try": cmd_try}[a.cmd](p, a)
+               "status": cmd_status, "try": cmd_try, "evaluate": cmd_evaluate}[a.cmd](p, a)
         if a.result_file:
             Path(a.result_file).write_text(json.dumps(res, ensure_ascii=False, default=str), encoding="utf-8")
 
