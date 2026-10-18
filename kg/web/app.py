@@ -1124,6 +1124,58 @@ async def ner_try(request: Request, slug: str):
     return {"entities": preds[0]}
 
 
+def _gliner_export(p: Project, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    cfg = ner.load_config(p)
+    train_rows, test_rows = ner.split_dataset(rows, ner.get_settings(cfg)["train"]["test_ratio"])
+    lm = ner.gliner_label_map(cfg)
+
+    def conv(rs):
+        return [{**ex, "ner": [[a, b, lm.get(lab, lab)] for a, b, lab in ex["ner"]]}
+                for r in rs for ex in ner.to_gliner(r["text"], r["entities"])]
+
+    return {"labels": [lm[n] for n in ner.label_names(cfg)], "label_map": lm,
+            "train": conv(train_rows), "test": conv(test_rows)}
+
+
+def _colab_notebook(p: Project, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Veri seti gömülü, tek tıkla çalışan Colab not defteri. Veri base64 olarak gömülür: kopyala-yapıştır veya
+    karakter kodlaması sorunları (Türkçe harfler, özel işaretler) olmaz; dosya yükleme adımı da gerekmez."""
+    import base64
+
+    cfg = ner.load_config(p)
+    st = ner.get_settings(cfg)["train"]
+    data_b64 = base64.b64encode(json.dumps(_gliner_export(p, rows), ensure_ascii=False).encode("utf-8")).decode("ascii")
+    script = (HERE.parent.parent / "scripts" / "train_gliner.py").read_text(encoding="utf-8")
+    base = cfg.get("base_model") or ner.DEFAULT_BASE_MODEL
+
+    def md(t):
+        return {"cell_type": "markdown", "metadata": {}, "source": t}
+
+    def code(t):
+        return {"cell_type": "code", "metadata": {}, "execution_count": None, "outputs": [], "source": t}
+
+    return {"nbformat": 4, "nbformat_minor": 5,
+            "metadata": {"accelerator": "GPU", "colab": {"provenance": []},
+                         "kernelspec": {"name": "python3", "display_name": "Python 3"}},
+            "cells": [
+                md(f"# GLiNER egitimi: {p.meta().get('name', p.slug)}\n\n"
+                   "1. Menu: Calisma zamani -> Calisma zamani turunu degistir -> T4 GPU.\n"
+                   "2. Calisma zamani -> Tumunu calistir (veya hucreleri sirayla calistir).\n"
+                   "3. Son hucre model.zip dosyasini indirir; web arayuzunde 3. adimdaki "
+                   "'Baska makinede (GPU) egittigin modeli yukle' ile yukle.\n\n"
+                   f"Veri seti bu not defterine gomuludur ({len(rows)} belge); dosya yuklemene gerek yok."),
+                code("!pip -q install gliner==0.2.29 accelerate sentencepiece protobuf"),
+                code("%%writefile train_gliner.py\n" + script),
+                code("import base64\n"
+                     f"DATA_B64 = '{data_b64}'\n"
+                     "open('data.json', 'wb').write(base64.b64decode(DATA_B64))\n"
+                     "print('data.json hazir')"),
+                code(f"!python train_gliner.py data.json --base {base} --epochs {st['epochs']} --batch {st['batch_size']} "
+                     f"--lr {st['lr']} --others-lr {st['others_lr']} --out model"),
+                code("!cd model && zip -qr ../model.zip .\nfrom google.colab import files\nfiles.download('model.zip')"),
+            ]}
+
+
 @app.get("/p/{slug}/ner/export/{fmt}")
 def ner_export(slug: str, fmt: str):
     p = get_project(slug)
@@ -1132,18 +1184,14 @@ def ner_export(slug: str, fmt: str):
         body = "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows)
         return Response(body, media_type="application/x-ndjson",
                         headers={"Content-Disposition": f'attachment; filename="{slug}-ner-dataset.jsonl"'})
+    if fmt == "train_gliner.py":  # betiği kopyala-yapıştırla değil dosya olarak indir (boşluklar '·' olarak kopyalanmasın)
+        return Response((HERE.parent.parent / "scripts" / "train_gliner.py").read_bytes(), media_type="text/x-python",
+                        headers={"Content-Disposition": 'attachment; filename="train_gliner.py"'})
+    if fmt == "colab.ipynb":
+        return Response(json.dumps(_colab_notebook(p, rows), ensure_ascii=True), media_type="application/x-ipynb+json",
+                        headers={"Content-Disposition": f'attachment; filename="{slug}-gliner-colab.ipynb"'})
     if fmt == "gliner.json":
-        cfg = ner.load_config(p)
-        train_rows, test_rows = ner.split_dataset(rows)
-        lm = ner.gliner_label_map(cfg)
-
-        def conv(rs):
-            return [{**ex, "ner": [[a, b, lm.get(lab, lab)] for a, b, lab in ex["ner"]]}
-                    for r in rs for ex in ner.to_gliner(r["text"], r["entities"])]
-
-        body = json.dumps({"labels": [lm[n] for n in ner.label_names(cfg)], "label_map": lm,
-                           "train": conv(train_rows), "test": conv(test_rows)}, ensure_ascii=False)
-        return Response(body, media_type="application/json",
+        return Response(json.dumps(_gliner_export(p, rows), ensure_ascii=False), media_type="application/json",
                         headers={"Content-Disposition": f'attachment; filename="{slug}-gliner-train.json"'})
     raise HTTPException(404)
 

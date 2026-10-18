@@ -139,6 +139,7 @@
   <div class="actions">
     <a class="btn secondary small-btn" href="/p/{{ p.slug }}/ner/export/dataset.jsonl">Veri setini indir (JSONL)</a>
     <a class="btn secondary small-btn" href="/p/{{ p.slug }}/ner/export/gliner.json">GLiNER eğitim biçiminde indir</a>
+    <a class="btn secondary small-btn" href="/p/{{ p.slug }}/ner/export/colab.ipynb" title="Veri seti içine gömülü; Colab'da Tümünü çalıştır yeterli">Colab not defterini indir (GPU eğitimi)</a>
     <form class="inline" method="post" action="/p/{{ p.slug }}/ner/clear" onsubmit="return confirm('Veri seti silinsin mi?')">
       <input type="hidden" name="csrf" value="{{ csrf }}"><button name="what" value="dataset" class="secondary small-btn">Tümünü sil</button></form>
   </div>
@@ -228,12 +229,15 @@
   {% endif %}
   <details style="margin-top:12px"><summary>Başka makinede (GPU) eğittiğin modeli yükle</summary>
     <ol class="small howto" style="margin-top:8px">
-      <li>2. adımdaki <b>"GLiNER eğitim biçiminde indir"</b> ile eğitim dosyasını (<code>…-gliner-train.json</code>) indir.</li>
-      <li><a href="https://colab.research.google.com/" target="_blank" rel="noopener">Google Colab</a>'da depodaki
-        <code>scripts/train_gliner_colab.ipynb</code> not defterini aç (Dosya → Not defteri yükle), GPU'yu seç, hücreleri sırayla çalıştır;
-        dosya istendiğinde indirdiğin JSON'u seç.</li>
+      <li>2. adımdaki <b>"Colab not defterini indir"</b> ile <code>…-gliner-colab.ipynb</code> dosyasını indir (veri seti ve ayarlar içinde).</li>
+      <li><a href="https://colab.research.google.com/" target="_blank" rel="noopener">Google Colab</a>'da Dosya → Not defteri yükle ile aç,
+        Çalışma zamanı → Çalışma zamanı türünü değiştir → <b>T4 GPU</b>, sonra Çalışma zamanı → <b>Tümünü çalıştır</b>.</li>
       <li>Son hücre <code>model.zip</code>'i indirir; onu aşağıdan yükle. Sonra 4. adımda "Uygula".</li>
     </ol>
+    <p class="small muted">Kendi GPU'lu bilgisayarında: <a href="/p/{{ p.slug }}/ner/export/train_gliner.py">train_gliner.py</a> ve
+      "GLiNER eğitim biçiminde indir" dosyasını indir, <code>pip install gliner==0.2.29 accelerate sentencepiece protobuf</code>,
+      sonra <code>python train_gliner.py dosya.json --epochs 5 --out model</code>. Betiği bir sayfadan kopyalayıp yapıştırma:
+      bazı görüntüleyiciler boşlukları "·" olarak kopyalar ve Python "invalid character '·'" hatası verir.</p>
     <p class="small muted">Türleri veya GLiNER etiketlerini değiştirirsen eğitim dosyasını yeniden indirip yeniden eğit.</p>
     <form method="post" action="/p/{{ p.slug }}/ner/model-upload" enctype="multipart/form-data" class="row-inline">
       <input type="hidden" name="csrf" value="{{ csrf }}"><input type="file" name="file" accept=".zip" required><button class="secondary">Yükle</button></form>

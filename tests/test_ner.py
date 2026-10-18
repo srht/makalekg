@@ -483,3 +483,60 @@ def test_subprocess_worker_and_oom(proj, monkeypatch):
         ner.run_in_subprocess(p, "train")
     mem = ner.memory_info()
     assert mem["total"] is None or mem["total"] > 0
+
+
+def test_colab_notebook_export(webc):
+    import base64
+    import json as _json
+    c, _ = webc
+    from test_web import _new_project, _wait_job, _csrf
+    import kg.okg.store as st
+    from kg.okg import ner
+    slug = _new_project(c, "Colab")
+    p = st.Project(slug)
+    for name, text in DOCS.items():
+        p.add_document(name, text.encode(), text)
+    cfg = ner.load_config(p)
+    cfg["labels"] = [{"name": n, "description": d} for n, d in ner.DOMAIN_PRESETS["elektrik"]["labels"]]
+    ner.save_config(p, cfg)
+    ner.annotate(p, FakeLLM(responder), doc_ids=[d["id"] for d in p.documents()])
+    r = c.get(f"/p/{slug}/ner/export/colab.ipynb")
+    assert r.status_code == 200 and "attachment" in r.headers["content-disposition"]
+    r.content.decode("ascii")  # tamamen ASCII: kodlama sorunu çıkmaz
+    nb = r.json()
+    srcs = [cell["source"] for cell in nb["cells"]]
+    assert srcs[2].startswith("%%writefile train_gliner.py\n") and "def main" in srcs[2]
+    b64 = srcs[3].split("DATA_B64 = '")[1].split("'")[0]
+    data = _json.loads(base64.b64decode(b64).decode("utf-8"))
+    assert data["train"] and data["label_map"]["Yazılım / Araç"] == "yazılım / araç"
+    assert "--epochs 5" in srcs[4] and "urchade/gliner_multi-v2.1" in srcs[4]
+    compile(srcs[3], "cell3", "exec")
+    compile(srcs[2].split("\n", 1)[1], "train_gliner.py", "exec")
+
+
+def test_colab_and_script_export(webc):
+    import base64
+    import json as _json
+    c, _ = webc
+    from test_web import _new_project
+    import kg.okg.store as st
+    from kg.okg import ner
+    slug = _new_project(c, "Colab")
+    p = st.Project(slug)
+    for name, text in DOCS.items():
+        p.add_document(name, text.encode(), text)
+    cfg = ner.load_config(p)
+    cfg["labels"] = [{"name": n, "description": d} for n, d in ner.DOMAIN_PRESETS["elektrik"]["labels"]]
+    ner.save_config(p, cfg)
+    ner.annotate(p, FakeLLM(responder), doc_ids=[d["id"] for d in p.documents()])
+    script = c.get(f"/p/{slug}/ner/export/train_gliner.py").text
+    compile(script, "train_gliner.py", "exec")
+    r = c.get(f"/p/{slug}/ner/export/colab.ipynb")
+    r.content.decode("ascii")  # tamamen ASCII: kodlama/kopyalama sorunu çıkmaz
+    srcs = [cell["source"] for cell in r.json()["cells"]]
+    assert srcs[2].startswith("%%writefile train_gliner.py\n") and srcs[2].split("\n", 1)[1] == script
+    data = _json.loads(base64.b64decode(srcs[3].split("DATA_B64 = '")[1].split("'")[0]).decode("utf-8"))
+    assert data["train"] and data["label_map"]["Yazılım / Araç"] == "yazılım / araç"
+    assert "--epochs 5" in srcs[4] and "urchade/gliner_multi-v2.1" in srcs[4]
+    compile(srcs[3], "cell3", "exec")
+    assert "colab.ipynb" in c.get(f"/p/{slug}/ner").text
